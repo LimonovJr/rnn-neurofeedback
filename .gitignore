@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+
+# runs and weights: rebuilt by the scripts, too large to version
+results/
+checkpoints/
+*.pt
