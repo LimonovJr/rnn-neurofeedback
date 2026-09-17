@@ -1,0 +1,394 @@
+"""Turn the per-run CSVs into the tables the report quotes. Aggregation is deliberately separate
+from the runs, so every table can be rebuilt without retraining anything.
+
+    python -m experiments.aggregate headroom
+    python -m experiments.aggregate nf-context --reps 0,1
+"""
+
+import argparse
+import statistics as st
+from collections import defaultdict
+
+import numpy as np
+
+from src import runs, stats
+
+RES_BEHAVIOUR = 0.05
+RES_CROSSNOBIS = 0.0086
+RES_PR = 0.060
+
+SETTINGS = ["c1", "c1r1", "c1r3", "patch"]
+
+
+def curve(row):
+    return runs.split(row["curve_upd"], int), runs.split(row["curve_dprime"])
+
+
+def by_net(rows, value):
+    out = defaultdict(list)
+    for r in rows:
+        out[int(r["net"])].append(value(r))
+    return out
+
+
+def headroom(args):
+    print("setting        n   C_A    C_B    H(med)   SEM      p   H(max)   H/C_B  res")
+    for setting in SETTINGS:
+        rows = runs.read(f"{args.results}/headroom_{setting}_*_net*.csv")
+        arms = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["C_mean"]))
+                for a in ("A", "B")}
+        nets = sorted(set(arms["A"]) & set(arms["B"]))
+        if not nets:
+            continue
+
+        med = [st.median(arms["B"][n]) - st.median(arms["A"][n]) for n in nets]
+        mx = [max(arms["B"][n]) - max(arms["A"][n]) for n in nets]
+        fraction = [(st.median(arms["B"][n]) - st.median(arms["A"][n])) / st.median(arms["B"][n])
+                    for n in nets]
+        c_a = np.mean([st.median(arms["A"][n]) for n in nets])
+        c_b = np.mean([st.median(arms["B"][n]) for n in nets])
+        mean, sem, p = stats.one_sample(med)
+        res = float(np.median([float(r["se_C"]) for r in rows]))
+        print(f"{setting:<12}{len(nets):>3}{c_a:>7.3f}{c_b:>7.3f}{mean:>+9.3f}{sem:>7.3f}"
+              f"{p:>8.4f}{np.mean(mx):>+8.3f}{np.mean(fraction):>8.3f}{res:>7.3f}  "
+              f"{stats.verdict(mean, p, res)}")
+
+    rows = runs.read(f"{args.results}/headroom_c1_*_net*.csv")
+    plus = by_net([r for r in rows if r["arm"] == "Aplus"], lambda r: float(r["C_mean"]))
+    linear = by_net([r for r in rows if r["arm"] == "A"], lambda r: float(r["C_mean"]))
+    if plus:
+        nets = sorted(set(plus) & set(linear))
+        mean, sem, p = stats.paired([st.median(plus[n]) for n in nets],
+                                    [st.median(linear[n]) for n in nets])
+        print(f"\nnonlinear read-out on the same frozen dynamics: "
+              f"C = {np.mean([st.median(plus[n]) for n in nets]):.3f}, "
+              f"{mean:+.3f} +/- {sem:.3f} over the linear read-out, p = {p:.4f}")
+
+    drift = [float(r["wrec_drift"]) for r in runs.read(f"{args.results}/headroom_*_A*_net*.csv")]
+    print(f"frozen-arm drift: max ||dW_rec||inf = {max(drift):.1e}")
+
+
+def control(args):
+    rows = runs.read(f"{args.results}/control_net*.csv")
+    arms = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["reeval"]))
+            for a in ("A", "B")}
+    nets = sorted(set(arms["A"]) & set(arms["B"]))
+
+    print(f"context reversal, {len(nets)} networks")
+    print(f"{'net':<5}{'theta0':>8}{'C_A med':>10}{'C_B med':>10}{'gap med':>10}{'gap max':>10}")
+    med, mx = [], []
+    for net in nets:
+        theta0 = float(next(r["theta0_d"] for r in rows if int(r["net"]) == net))
+        med.append(st.median(arms["B"][net]) - st.median(arms["A"][net]))
+        mx.append(max(arms["B"][net]) - max(arms["A"][net]))
+        print(f"{net:<5}{theta0:>+8.3f}{st.median(arms['A'][net]):>10.3f}"
+              f"{st.median(arms['B'][net]):>10.3f}{med[-1]:>+10.3f}{mx[-1]:>+10.3f}")
+
+    for name, gaps in (("median", med), ("max", mx)):
+        mean, sem, p = stats.one_sample(gaps)
+        print(f"  gap by {name:<7}= {mean:+.3f} +/- {sem:.3f}, p = {p:.4f}")
+    print("  read for its order of magnitude, not its statistics: three networks, and the arms "
+          "carry unequal restart counts")
+
+
+def degradation(args):
+    rows = runs.read(f"{args.results}/degradation_net*.csv")
+    ladder = [r for r in rows if r["knob"] == "input" and r["sigma"] != ""]
+    intact = {int(r["net"]): float(r["dprime"]) for r in ladder if float(r["sigma"]) == 0.0}
+    print("sigma_in    d' (mean over nets)    s = 1 - d/d(intact)")
+    for sigma in sorted({float(r["sigma"]) for r in ladder}):
+        cell = [r for r in ladder if float(r["sigma"]) == sigma]
+        d = [float(r["dprime"]) for r in cell]
+        s = [1 - float(r["dprime"]) / intact[int(r["net"])] for r in cell if int(r["net"]) in intact]
+        loss = f"{np.mean(s):>22.3f}" if s else " " * 22
+        print(f"{sigma:>6.2f}{np.mean(d):>18.3f}{loss}    n = {len(cell)}")
+
+    untrained = [float(r["dprime"]) for r in rows if r["knob"] == "untrained"]
+    if untrained:
+        print(f"\nuntrained networks sit at d' = {np.mean(untrained):.3f}, which is the clamp "
+              f"rather than a point on the axis")
+
+
+def patch(args):
+    rows = runs.read(f"{args.results}/patch_net*.csv")
+    print("jitter  T_avg   d' (mean over nets)   kind")
+    for kind in sorted({r["kind"] for r in rows}):
+        for key in sorted({(float(r["jitter"]), float(r["t_avg"])) for r in rows
+                           if r["kind"] == kind}):
+            d = [float(r["dprime"]) for r in rows if r["kind"] == kind
+                 and (float(r["jitter"]), float(r["t_avg"])) == key]
+            print(f"{key[0]:>6.2f}{key[1]:>7.0f}{np.mean(d):>15.3f}   {kind}")
+
+    gains = defaultdict(dict)
+    for r in rows:
+        if r["kind"] == "patch":
+            gains[float(r["jitter"])][float(r["t_avg"])] = gains[float(r["jitter"])].get(
+                float(r["t_avg"]), []) + [float(r["dprime"])]
+    print("\naveraging gain (T_avg 20 minus T_avg 100), per jitter level:")
+    for jitter, by_t in sorted(gains.items()):
+        if 20.0 in by_t and 100.0 in by_t:
+            mean, sem, p = stats.paired(by_t[20.0], by_t[100.0])
+            print(f"  jitter {jitter:.2f}: {mean:+.3f} +/- {sem:.3f}, p = {p:.4f}")
+
+
+def resolutions(args):
+    """Two standard deviations over repeat measurements of one frozen model, per quantity."""
+    rows = runs.read(f"{args.results}/resolution_*_net*.csv")
+    for task in sorted({r["task"] for r in rows}):
+        task_rows = [r for r in rows if r["task"] == task]
+        print(f"{task}: {len(task_rows)} repeats")
+        for key in ("dprime", "crossnobis", "pr", "context", "match", "xor"):
+            values = [float(r[key]) for r in task_rows if r.get(key) not in (None, "")]
+            if len(values) > 1:
+                print(f"  {key:<12}mean {np.mean(values):>8.4f}   resolution (2 SD) "
+                      f"{stats.resolution(values):>8.4f}")
+        paired = [(float(r["dprime"]), float(r["dprime_paired"])) for r in task_rows
+                  if r.get("dprime_paired")]
+        if len(paired) > 1:
+            diffs = [a - b for a, b in paired]
+            print(f"  evaluation SD at the reporting sample size: "
+                  f"{np.std(diffs, ddof=1) / np.sqrt(2):.4f} over {len(diffs)} paired evaluations")
+
+
+def competence(args):
+    """Where behaviour leaves the floor, whether that point reproduces, and whether the
+    representation moves before it does."""
+    rows = runs.read(f"{args.results}/competence_net*_r*.csv")
+    crossings = defaultdict(dict)
+    above = total = 0
+    for r in rows:
+        above += abs(float(r["crossnobis"])) > RES_CROSSNOBIS
+        total += 1
+    for key in sorted({(int(r["net"]), int(r["rep"])) for r in rows}):
+        net, rep = key
+        run_rows = sorted([r for r in rows if (int(r["net"]), int(r["rep"])) == key],
+                          key=lambda r: int(r["upd"]))
+        first = next((int(r["upd"]) for r in run_rows if float(r["dprime"]) > 0.0), None)
+        crossings[net][rep] = first
+        print(f"net {net} rep {rep}: first update with behaviour above the floor = {first}")
+
+    shifts = [abs(v[0] - v[1]) for v in crossings.values()
+              if len(v) > 1 and None not in (v.get(0), v.get(1))]
+    if shifts:
+        print(f"crossing shift between repeats: mean {np.mean(shifts):.0f}, max {max(shifts):.0f} updates")
+    print(f"crossnobis above its resolution: {above}/{total} sampled points")
+
+
+def nf_c1(args):
+    rows = runs.read(f"{args.results}/nf_c1_*_n1000_net*.csv")
+    conds = ("control", "position", "joint", "reward")
+    if not all(any(r["cond"] == c for r in rows) for c in conds):
+        print("the four conditions are not all present yet")
+        return
+    coupling, cross, pr = {}, {}, {}
+    for cond in conds:
+        cond_rows = [r for r in rows if r["cond"] == cond]
+        nets = sorted(int(r["net"]) for r in cond_rows)
+        coupling[cond] = []
+        for net in nets:
+            r = next(r for r in cond_rows if int(r["net"]) == net)
+            upds, values = curve(r)
+            half = int(r["updates"]) // 2
+            coupling[cond].append(float(np.median([v for u, v in zip(upds, values) if u >= half])))
+        cross[cond] = [float(r["crossnobis"]) for r in sorted(cond_rows, key=lambda r: int(r["net"]))]
+        pr[cond] = [float(r["pr"]) for r in sorted(cond_rows, key=lambda r: int(r["net"]))]
+
+    print(f"{'quantity':<14}" + "".join(f"{c:>26}" for c in conds[1:]) + "   resolution")
+    for name, data, res in (("coupling", coupling, RES_BEHAVIOUR),
+                            ("crossnobis", cross, RES_CROSSNOBIS),
+                            ("PR", pr, RES_PR)):
+        cells = []
+        for cond in conds[1:]:
+            mean, sem, p = stats.paired(data[cond], data["control"])
+            cells.append(f"{mean:+.4f} p={p:.3f} {stats.verdict(mean, p, res)[:3]:>3}")
+        print(f"{name:<14}" + "".join(f"{c:>26}" for c in cells) + f"   {res}")
+
+    print("\nupdates to reach the coupling level, per condition:")
+    for cond in conds:
+        reached = []
+        for r in sorted([r for r in rows if r["cond"] == cond], key=lambda r: int(r["net"])):
+            upds, values = curve(r)
+            target = float(np.median([v for u, v in zip(upds, values)
+                                      if u >= int(r["updates"]) // 2]))
+            reached.append(stats.first_within(upds[1:], values[1:], target, RES_BEHAVIOUR))
+        print(f"  {cond:<10}{reached}")
+
+    start = [float(r["d0"]) for r in rows if r["cond"] == "control"]
+    print(f"\nreward against a zero-update baseline: "
+          f"{np.mean(coupling['reward']) - np.mean(start):+.3f} "
+          f"(against the equal-budget control: "
+          f"{np.mean(coupling['reward']) - np.mean(coupling['control']):+.3f})")
+
+
+def levels(rows, reps, k=6):
+    """Level at the budget per network: mean of the last k re-evaluations, averaged over repeats."""
+    out = defaultdict(list)
+    for r in rows:
+        if int(r["rep"]) not in reps:
+            continue
+        _, values = curve(r)
+        out[int(r["net"])].append(stats.level(values, k)[0])
+    return {net: float(np.mean(v)) for net, v in out.items()}
+
+
+def nf_context(args):
+    rows = runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv")
+    conds = ("control", "position", "joint", "reward")
+    reps = [int(s) for s in args.reps.split(",")]
+    table = {c: levels([r for r in rows if r["cond"] == c], reps) for c in conds}
+    nets = sorted(set.intersection(*[set(v) for v in table.values()]))
+    if not nets:
+        print("no network has all four conditions yet")
+        return
+
+    print("net " + "".join(f"{c:>10}" for c in conds))
+    for net in nets:
+        print(f"{net:<4}" + "".join(f"{table[c][net]:>10.3f}" for c in conds))
+    print("mean" + "".join(f"{np.mean([table[c][n] for n in nets]):>10.3f}" for c in conds))
+
+    # the threshold is the replicate spread, which is coarser than the within-model resolution
+    print("\nruns whose residual bias is below 0.0634, and the update the level settles at:")
+    for cond in conds:
+        cond_rows = [r for r in rows if r["cond"] == cond and int(r["rep"]) in reps]
+        settled, biases = [], []
+        for r in cond_rows:
+            upds, values = curve(r)
+            level, _, _, bias = stats.level(values)
+            biases.append(abs(bias) < 0.0634)
+            settled.append(stats.plateau(upds, values, level, 0.0634))
+        print(f"  {cond:<10}{sum(biases)}/{len(biases)}   settles at {settled}")
+
+    print("\ncontrast                          value     SEM       p")
+    for name, a, b in (("joint minus control", "joint", "control"),
+                       ("reward minus control", "reward", "control"),
+                       ("position minus joint", "position", "joint")):
+        for label, subset in ((name, nets),
+                              ("  the same, excluding net 1", [n for n in nets if n != 1])):
+            mean, sem, p = stats.paired([table[a][n] for n in subset],
+                                        [table[b][n] for n in subset])
+            print(f"{label:<32}{mean:>+8.3f}{sem:>8.3f}{p:>8.4f}   "
+                  f"{stats.verdict(mean, p, RES_BEHAVIOUR)}")
+
+
+def lam(args):
+    for task in ("context", "c1"):
+        rows = runs.read(f"{args.results}/nf_{task}_*_lam*_net*.csv")
+        rows = [r for r in rows if int(r["eval_n"]) == 10000]
+        if not rows:
+            continue
+        print(f"\n{task}: level at the budget by lambda")
+        control_rows = [r for r in rows if r["cond"] == "control"]
+        base = levels(control_rows, range(10))
+        for value in sorted({float(r["lam"]) for r in rows if r["cond"] == "joint"}):
+            joint = levels([r for r in rows if r["cond"] == "joint" and float(r["lam"]) == value],
+                           range(10))
+            nets = sorted(set(joint) & set(base))
+            if not nets:
+                continue
+            mean, sem, p = stats.paired([joint[n] for n in nets], [base[n] for n in nets])
+            print(f"  lambda {value:<5g} L = {np.mean([joint[n] for n in nets]):.3f}   "
+                  f"vs control {mean:+.4f} +/- {sem:.4f}, p = {p:.4f}")
+        if base:
+            print(f"  control     L = {np.mean(list(base.values())):.3f}")
+
+
+def representation(args):
+    rows = runs.read(f"{args.results}/repr_context_*_net*.csv")
+    conds = ("theta0", "control", "position", "joint", "reward")
+    print(f"{'condition':<12}{'crossnobis':>12}{'XOR':>10}{'match':>10}{'context':>10}")
+    table = {}
+    for cond in conds:
+        cond_rows = [r for r in rows if r["cond"] == cond]
+        if not cond_rows:
+            continue
+        table[cond] = {k: by_net(cond_rows, lambda r, k=k: float(r[k]))
+                       for k in ("crossnobis", "xor_acc", "match_acc", "context_acc")}
+        means = {k: np.mean([np.mean(v) for v in table[cond][k].values()]) for k in table[cond]}
+        print(f"{cond:<12}{means['crossnobis']:>12.4f}{means['xor_acc']:>10.4f}"
+              f"{means['match_acc']:>10.4f}{means['context_acc']:>10.4f}")
+
+    if "theta0" not in table:
+        return
+    print("\nagainst theta_0                 value     SEM       p")
+    for cond in conds[1:]:
+        if cond not in table:
+            continue
+        for key in ("crossnobis", "xor_acc"):
+            nets = sorted(set(table[cond][key]) & set(table["theta0"][key]))
+            mean, sem, p = stats.paired([np.mean(table[cond][key][n]) for n in nets],
+                                        [np.mean(table["theta0"][key][n]) for n in nets])
+            print(f"{cond + ' ' + key:<28}{mean:>+8.4f}{sem:>8.4f}{p:>8.4f}")
+
+    if "theta0" in table:
+        behaviour_vs_code(args, table)
+
+
+def behaviour_vs_code(args, table):
+    """Does the behavioural level follow the decodability of the conjunction?
+
+    The levels come from the runs that produced the checkpoints the representation pass read, so the
+    two quantities are measured on the same weights.
+    """
+    rows = runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv")
+    reps = [int(s) for s in args.reps.split(",")]
+    conds = [c for c in table if c != "theta0"]
+    cells = []
+    for cond in conds:
+        L = levels([r for r in rows if r["cond"] == cond], reps)
+        for net, value in L.items():
+            if net in table[cond]["xor_acc"]:
+                cells.append((value, float(np.mean(table[cond]["xor_acc"][net]))))
+    if len(cells) < 3:
+        return
+
+    level_values = np.array([c[0] for c in cells])
+    xor_values = np.array([c[1] for c in cells])
+    from scipy.stats import pearsonr
+    r, p = pearsonr(level_values, xor_values)
+    print(f"\nlevel against XOR decoding over {len(cells)} cells: r = {r:.3f}, p = {p:.2g}")
+
+    if "control" not in table:
+        return
+    base_level = np.mean([levels([r for r in rows if r["cond"] == "control"], reps)[n]
+                          for n in sorted(table["control"]["xor_acc"])])
+    base_xor = np.mean([np.mean(v) for v in table["control"]["xor_acc"].values()])
+    print("condition   measured   predicted from XOR    difference")
+    for cond in conds:
+        if cond == "control":
+            continue
+        L = levels([r for r in rows if r["cond"] == cond], reps)
+        measured = np.mean([L[n] for n in sorted(table[cond]["xor_acc"]) if n in L]) - base_level
+        predicted = stats.probit(np.mean([np.mean(v) for v in table[cond]["xor_acc"].values()])) \
+            - stats.probit(base_xor)
+        print(f"{cond:<12}{measured:>+9.3f}{predicted:>+21.3f}{measured - predicted:>+14.3f}")
+
+
+def gradients(args):
+    rows = runs.read(f"{args.results}/grad_context_*_net*.csv")
+    print(f"{'condition':<12}{'cos':>10}{'SEM':>8}{'rho':>10}{'|g_task|':>10}{'|g_aux|':>10}")
+    for cond in sorted({r["cond"] for r in rows}):
+        cond_rows = [r for r in rows if r["cond"] == cond]
+        cos = [float(r["cos"]) for r in cond_rows]
+        print(f"{cond:<12}{np.mean(cos):>+10.3f}{stats.sem(cos):>8.3f}"
+              f"{np.mean([float(r['rho']) for r in cond_rows]):>10.2f}"
+              f"{np.mean([float(r['g_task']) for r in cond_rows]):>10.2f}"
+              f"{np.mean([float(r['g_aux']) for r in cond_rows]):>10.2f}")
+
+
+TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
+          "degradation": degradation, "patch": patch, "competence": competence,
+          "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam,
+          "representation": representation, "gradients": gradients}
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("table", choices=list(TABLES))
+    p.add_argument("--results", default="results")
+    p.add_argument("--reps", default="0,1")
+    args = p.parse_args()
+    TABLES[args.table](args)
+
+
+if __name__ == "__main__":
+    main()
