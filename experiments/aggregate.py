@@ -222,49 +222,66 @@ def manifold(args):
 
 
 def nf_c1(args):
-    rows = runs.read(f"{args.results}/nf_c1_*_n1000_net*.csv")
-    conds = ("control", "position", "joint", "reward")
-    if not all(any(r["cond"] == c for r in rows) for c in conds):
-        print("the four conditions are not all present yet")
+    """Signals against the equal-budget control on c1, at the evaluation size given by --eval-n:
+    1000 is the published stage with its representation panel, 10000 the properly measured
+    behaviour. Conditions that have no runs at that size are left out."""
+    rows = runs.read(f"{args.results}/nf_c1_*_n{args.eval_n}_net*.csv")
+    rows = [r for r in rows if int(r["updates"]) == 1200 and not int(r.get("adapt_decoder", 0) or 0)]
+    conds = [c for c in ("control", "position", "joint", "reward", "reward_aux", "expand")
+             if any(r["cond"] == c for r in rows)]
+    if "control" not in conds or len(conds) < 2:
+        print("no control at this evaluation size, or nothing to compare it with")
         return
-    coupling, cross, pr = {}, {}, {}
-    for cond in conds:
-        cond_rows = [r for r in rows if r["cond"] == cond]
-        nets = sorted(int(r["net"]) for r in cond_rows)
-        coupling[cond] = []
-        for net in nets:
-            r = next(r for r in cond_rows if int(r["net"]) == net)
-            upds, values = curve(r)
-            half = int(r["updates"]) // 2
-            coupling[cond].append(float(np.median([v for u, v in zip(upds, values) if u >= half])))
-        cross[cond] = [float(r["crossnobis"]) for r in sorted(cond_rows, key=lambda r: int(r["net"]))]
-        pr[cond] = [float(r["pr"]) for r in sorted(cond_rows, key=lambda r: int(r["net"]))]
 
-    print(f"{'quantity':<14}" + "".join(f"{c:>26}" for c in conds[1:]) + "   resolution")
-    for name, data, res in (("coupling", coupling, RES_BEHAVIOUR),
-                            ("crossnobis", cross, RES_CROSSNOBIS),
-                            ("PR", pr, RES_PR)):
+    coupling, level, cross, pr = {}, {}, {}, {}
+    for cond in conds:
+        cond_rows = [r for r in rows if r["cond"] == cond and (cond != "joint" or r["lam"] in ("1", "1.0"))]
+        by = by_net(cond_rows, lambda r: r)
+        coupling[cond], level[cond], cross[cond], pr[cond] = {}, {}, {}, {}
+        for net, group in by.items():
+            values = []
+            for r in group:
+                upds, curve_values = curve(r)
+                values.append((np.median([v for u, v in zip(upds, curve_values) if u >= 600]),
+                               np.mean(curve_values[-6:])))
+            coupling[cond][net] = float(np.mean([v[0] for v in values]))
+            level[cond][net] = float(np.mean([v[1] for v in values]))
+            if all(r["crossnobis"] for r in group):
+                cross[cond][net] = float(np.mean([float(r["crossnobis"]) for r in group]))
+                pr[cond][net] = float(np.mean([float(r["pr"]) for r in group]))
+
+    print(f"evaluation on {args.eval_n} trials; per-network values averaged over repeats")
+    print(f"{'quantity':<14}" + "".join(f"{c:>26}" for c in conds if c != "control") + "   resolution")
+    for name, data, res in (("level", level, RES_BEHAVIOUR), ("coupling", coupling, RES_BEHAVIOUR),
+                            ("crossnobis", cross, RES_CROSSNOBIS), ("PR", pr, RES_PR)):
         cells = []
-        for cond in conds[1:]:
-            mean, sem, p = stats.paired(data[cond], data["control"])
+        for cond in conds:
+            if cond == "control":
+                continue
+            nets = sorted(set(data[cond]) & set(data["control"]))
+            if len(nets) < 2:
+                cells.append(f"{'(no data)':>26}")
+                continue
+            mean, sem, p = stats.paired([data[cond][n] for n in nets], [data["control"][n] for n in nets])
             cells.append(f"{mean:+.4f} p={p:.3f} {stats.verdict(mean, p, res)[:3]:>3}")
         print(f"{name:<14}" + "".join(f"{c:>26}" for c in cells) + f"   {res}")
 
     print("\nupdates to reach the coupling level, per condition:")
     for cond in conds:
         reached = []
-        for r in sorted([r for r in rows if r["cond"] == cond], key=lambda r: int(r["net"])):
+        for r in sorted([r for r in rows if r["cond"] == cond], key=lambda r: (int(r["net"]), int(r["rep"]))):
             upds, values = curve(r)
-            target = float(np.median([v for u, v in zip(upds, values)
-                                      if u >= int(r["updates"]) // 2]))
+            target = float(np.median([v for u, v in zip(upds, values) if u >= 600]))
             reached.append(stats.first_within(upds[1:], values[1:], target, RES_BEHAVIOUR))
-        print(f"  {cond:<10}{reached}")
+        print(f"  {cond:<11}{reached}")
 
-    start = [float(r["d0"]) for r in rows if r["cond"] == "control"]
-    print(f"\nreward against a zero-update baseline: "
-          f"{np.mean(coupling['reward']) - np.mean(start):+.3f} "
-          f"(against the equal-budget control: "
-          f"{np.mean(coupling['reward']) - np.mean(coupling['control']):+.3f})")
+    start = [float(r["d0"]) for r in rows if r["cond"] == "control" and r["d0"]]
+    if start and "reward" in coupling:
+        nets = sorted(set(coupling["reward"]) & set(coupling["control"]))
+        print(f"\nreward against a zero-update baseline: "
+              f"{np.mean([coupling['reward'][n] for n in nets]) - np.mean(start):+.3f} "
+              f"(against the equal-budget control: "
+              f"{np.mean([coupling['reward'][n] - coupling['control'][n] for n in nets]):+.3f})")
 
 
 def levels(rows, reps, k=6):
@@ -434,6 +451,7 @@ def main():
     p.add_argument("table", choices=list(TABLES))
     p.add_argument("--results", default="results")
     p.add_argument("--reps", default="0,1")
+    p.add_argument("--eval-n", type=int, default=1000, help="which evaluation size nf-c1 reads")
     args = p.parse_args()
     TABLES[args.table](args)
 
