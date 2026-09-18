@@ -15,6 +15,7 @@ in the aggregation pass.
 """
 
 import argparse
+import os
 import copy
 from collections import deque
 
@@ -180,6 +181,9 @@ def main():
     tag = ("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
     a.out = a.out or (f"results/nf_{a.task}_{a.cond}_lam{a.lam:g}_n{a.eval_n}{tag}"
                       f"_net{a.net}_r{a.rep}.csv")
+    if os.path.exists(a.out):
+        print(f"[skip] {a.out} exists", flush=True)
+        return
     run(a)
 
 

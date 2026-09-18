@@ -9,6 +9,7 @@ sample size directly.
 """
 
 import argparse
+import os
 
 from src import behaviour, representation, runs, tasks
 from src.model import load
@@ -44,8 +45,11 @@ def main():
     p.add_argument("--panel-trials", type=int, default=PANEL_N)
     p.add_argument("--out")
     a = p.parse_args()
-    run(a.task, a.net, a.rep, a.reeval, a.panel_trials,
-        a.out or f"results/resolution_{a.task}_net{a.net}_r{a.rep}.csv")
+    a.out = a.out or f"results/resolution_{a.task}_net{a.net}_r{a.rep}.csv"
+    if os.path.exists(a.out):
+        print(f"[skip] {a.out} exists", flush=True)
+        return
+    run(a.task, a.net, a.rep, a.reeval, a.panel_trials, a.out)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ immediate drop of every candidate and nothing else.
 """
 
 import argparse
+import os
 
 import numpy as np
 import torch
@@ -221,6 +222,9 @@ def main():
     ladder = "auto" if a.auto else f"s{a.steps}"
     a.out = a.out or (f"results/manifold_{a.kind}_{a.cond}_a{a.angle:g}_{ladder}_net{a.net}"
                       f"_c{a.candidate}_r{a.rep}.csv")
+    if os.path.exists(a.out):
+        print(f"[skip] {a.out} exists", flush=True)
+        return
     run(a)
 
 

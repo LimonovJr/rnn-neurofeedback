@@ -9,6 +9,7 @@ repeatable.
 """
 
 import argparse
+import os
 import glob
 
 import numpy as np
@@ -74,8 +75,11 @@ def main():
     p.add_argument("--panel-trials", type=int, default=PANEL_N)
     p.add_argument("--out")
     a = p.parse_args()
-    run(a.cond, a.net, a.rep, a.ckpt_dir, a.repeats, a.panel_trials,
-        a.out or f"results/repr_context_{a.cond}_net{a.net}_r{a.rep}.csv")
+    a.out = a.out or f"results/repr_context_{a.cond}_net{a.net}_r{a.rep}.csv"
+    if os.path.exists(a.out):
+        print(f"[skip] {a.out} exists", flush=True)
+        return
+    run(a.cond, a.net, a.rep, a.ckpt_dir, a.repeats, a.panel_trials, a.out)
 
 
 if __name__ == "__main__":

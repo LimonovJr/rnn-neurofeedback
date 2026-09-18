@@ -9,6 +9,7 @@ conditions actually optimise, under training conditions rather than evaluation c
 """
 
 import argparse
+import os
 import glob
 
 import numpy as np
@@ -161,8 +162,11 @@ def main():
                         "the realised against the predicted change in the task loss")
     p.add_argument("--out")
     a = p.parse_args()
-    run(a.cond, a.net, a.rep, a.ckpt_dir, a.step,
-        a.out or f"results/grad_context_{a.cond}_net{a.net}_r{a.rep}.csv")
+    a.out = a.out or f"results/grad_context_{a.cond}_net{a.net}_r{a.rep}.csv"
+    if os.path.exists(a.out):
+        print(f"[skip] {a.out} exists", flush=True)
+        return
+    run(a.cond, a.net, a.rep, a.ckpt_dir, a.step, a.out)
 
 
 if __name__ == "__main__":
