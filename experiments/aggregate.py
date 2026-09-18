@@ -174,6 +174,53 @@ def competence(args):
     print(f"crossnobis above its resolution: {above}/{total} sampled points")
 
 
+def labelfree(args):
+    """The label-free question: does the positional term help a reward-only learner? reward_aux
+    against reward on the same networks at the same budget, level and updates-to-level."""
+    reps = [int(s) for s in args.reps.split(",")]
+    for task in ("c1", "context"):
+        rows = [r for r in runs.read(f"{args.results}/nf_{task}_reward*_net*.csv")
+                if int(r["eval_n"]) == 10000]
+        base = levels([r for r in rows if r["cond"] == "reward"], reps)
+        if not base:
+            continue
+        print(f"\n{task}: reward-only level {np.mean(list(base.values())):.3f} over {len(base)} networks")
+        for lam, target in sorted({(r["lam"], r.get("target", "target")) for r in rows
+                                   if r["cond"] == "reward_aux"}):
+            aux = levels([r for r in rows if r["cond"] == "reward_aux"
+                          and (r["lam"], r.get("target", "target")) == (lam, target)], reps)
+            nets = sorted(set(aux) & set(base))
+            if len(nets) < 2:
+                continue
+            mean, sem, p = stats.paired([aux[n] for n in nets], [base[n] for n in nets])
+            print(f"  + positional term (lam {lam}, {target}): level "
+                  f"{np.mean([aux[n] for n in nets]):.3f}, {mean:+.3f} +/- {sem:.3f} against "
+                  f"reward-only, p = {p:.4f}, {stats.verdict(mean, p, RES_BEHAVIOUR)}")
+
+
+def manifold(args):
+    """Relearning after a within- or outside-manifold perturbation of the decision read-out: the
+    immediate drop, the level recovered, and the update at which the network is back within
+    resolution of its intact self."""
+    rows = runs.read(f"{args.results}/manifold_*_net*.csv")
+    print(f"{'kind':<9}{'cond':<9}{'angle':>6}{'steps':>6}{'n':>4}{'intact':>8}{'dropped':>9}"
+          f"{'recovered':>11}   back within resolution")
+    for key in sorted({(r["kind"], r["cond"], float(r["angle"]), int(r["steps"])) for r in rows}):
+        cell = [r for r in rows if (r["kind"], r["cond"], float(r["angle"]), int(r["steps"])) == key]
+        recovered, back = [], []
+        for r in cell:
+            upds, values = curve(r)
+            recovered.append(float(np.mean(values[-3:])))
+            target = float(r["d_intact"]) - RES_BEHAVIOUR
+            back.append(next((u for u, v in zip(upds, values) if v >= target), None))
+        settled = [b for b in back if b is not None]
+        when = f"{np.median(settled):.0f} updates ({len(settled)}/{len(cell)})" if settled else "never"
+        print(f"{key[0]:<9}{key[1]:<9}{key[2]:>6g}{key[3]:>6}{len(cell):>4}"
+              f"{np.mean([float(r['d_intact']) for r in cell]):>8.3f}"
+              f"{np.mean([float(r['d_perturbed']) for r in cell]):>9.3f}"
+              f"{np.mean(recovered):>11.3f}   {when}")
+
+
 def nf_c1(args):
     rows = runs.read(f"{args.results}/nf_c1_*_n1000_net*.csv")
     conds = ("control", "position", "joint", "reward")
@@ -377,7 +424,8 @@ def gradients(args):
 
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
-          "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam,
+          "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
+          "manifold": manifold,
           "representation": representation, "gradients": gradients}
 
 

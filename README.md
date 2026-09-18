@@ -104,13 +104,15 @@ any average, so the tables can be rebuilt without retraining.
 | `degradation` | the input-noise ladder and the sub-optimality axis | `degradation` |
 | `patch_integration` | what averaging over the stimulus window is worth | `patch` |
 | `competence` | whether the representation forms before behaviour leaves the floor | — |
-| `nf` | one neurofeedback run (task × condition × network × repeat) | `nf-c1`, `nf-context`, `lambda` |
+| `nf` | one neurofeedback run (task × condition × network × repeat); conditions include the label-free `reward_aux` and the within-manifold `expand`, with knobs for the regression target, a weight anchor and decoder co-adaptation | `nf-c1`, `nf-context`, `lambda`, `labelfree` |
+| `manifold` | within- against outside-manifold perturbation of the frozen read-out, relearned by reward, with an incremental ladder | `manifold` |
 | `representation` | the code at the end of a run, from its saved checkpoints | `representation` |
-| `gradients` | how the task and positional gradients sit relative to each other | `gradients` |
+| `gradients` | how the task and positional gradients sit relative to each other, and whether a single step moves the task loss as the projection predicts | `gradients` |
 
 Run the whole campaign with `scripts/pretrain.sh`, then `scripts/headroom.sh`,
 `scripts/instrument.sh`, `scripts/nf_c1.sh` and `scripts/nf_context.sh`. Together they are a few
-hundred process-hours.
+hundred process-hours. `scripts/paper.sh` holds the follow-up runs, each with the question it
+answers and the prediction it was written against.
 
 ## Reproducibility
 

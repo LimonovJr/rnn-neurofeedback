@@ -6,6 +6,7 @@ catch a collapse of the code onto too few dimensions.
 """
 
 import numpy as np
+import torch
 
 from src import trials
 
@@ -122,3 +123,18 @@ def decode_battery(model, env_fn, n_trials=2000, device="cpu"):
         clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, C=1.0))
         out[name] = float(cross_val_score(clf, X, np.array(y), cv=5, scoring="accuracy").mean())
     return out
+
+
+def delay_basis(model, env_fn, k=10, n_trials=1500, window_ms=(-300, 0), device="cpu"):
+    """The intrinsic manifold of the delay: mean state, the top-k principal directions of the
+    per-trial delay-mean states, and the mean radius of the states inside that subspace."""
+    X, _, _ = delay_population(model, env_fn, n_trials=n_trials, window_ms=window_ms,
+                               device=device, noisy=True, outcome=None)
+    mu = X.mean(0)
+    _, s, Vt = np.linalg.svd(X - mu, full_matrices=False)
+    P = Vt[:k].T.copy()
+    radius = float(np.linalg.norm((X - mu) @ P, axis=1).mean())
+    explained = float((s[:k] ** 2).sum() / (s ** 2).sum())
+    return dict(mu=torch.tensor(mu, dtype=torch.float32, device=device),
+                P=torch.tensor(P, dtype=torch.float32, device=device),
+                radius=radius, explained=explained)

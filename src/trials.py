@@ -93,12 +93,13 @@ def targets_and_mask(gt_seq, response_weight=1.0, baseline_weight=1.0):
     return targets, mask
 
 
-def batch(env_fn, batch_size, dt, device="cpu", window_ms=None):
+def batch(env_fn, batch_size, dt, device="cpu", window_ms=None, xy_from="target"):
     """One padded training batch: inputs, go/no-go targets, loss mask, false-alarm mask, the trial's
     (x, y) and the frames on which a positional loss applies, and trial lengths.
 
     `window_ms` (relative to target onset) selects a delay window instead of the default, which is
-    from target onset to the end of the trial.
+    from target onset to the end of the trial. `xy_from` picks the regression target: the stimulus
+    position, or the cue position, which is the one that is knowable during the delay.
     """
     xs, ys, masks, fas, xys, xy_masks, lens = [], [], [], [], [], [], []
     for _ in range(batch_size):
@@ -115,7 +116,7 @@ def batch(env_fn, batch_size, dt, device="cpu", window_ms=None):
             a, b = delay_window(int(env.start_ind["target"]), dt, window_ms)
             xy_mask[a:min(b, T)] = 1.0
 
-        tx, ty = env.trial["target_pos"]
+        tx, ty = env.trial["cue_pos" if xy_from == "cue" else "target_pos"]
         xy = np.zeros((T, 2), dtype=np.float32)
         xy[:, 0], xy[:, 1] = tx, ty
 
