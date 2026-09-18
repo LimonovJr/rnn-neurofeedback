@@ -269,7 +269,8 @@ def nf_c1(args):
     print("\nupdates to reach the coupling level, per condition:")
     for cond in conds:
         reached = []
-        for r in sorted([r for r in rows if r["cond"] == cond], key=lambda r: (int(r["net"]), int(r["rep"]))):
+        cond_rows = [r for r in rows if r["cond"] == cond and (cond != "joint" or r["lam"] in ("1", "1.0"))]
+        for r in sorted(cond_rows, key=lambda r: (int(r["net"]), int(r["rep"]))):
             upds, values = curve(r)
             target = float(np.median([v for u, v in zip(upds, values) if u >= 600]))
             reached.append(stats.first_within(upds[1:], values[1:], target, RES_BEHAVIOUR))
