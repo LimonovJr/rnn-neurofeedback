@@ -74,6 +74,7 @@ class BioLeakyRNNTopo(nn.Module):
         self.sigma_in = 0.0
         self.noise_at_eval = False
         self.readout_head = None
+        self.noise_log = None            # a list makes step() keep each draw, for node perturbation
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -120,7 +121,10 @@ class BioLeakyRNNTopo(nn.Module):
 
         preact = drive_fix + drive_cue + drive_stim + F.linear(h_t, self.W_rec_eff()) + self.b_h
         if noisy and self.rec_noise:
-            preact = preact + self.sigma_eff * torch.randn_like(preact)
+            xi = self.sigma_eff * torch.randn_like(preact)
+            if self.noise_log is not None:
+                self.noise_log.append(xi)
+            preact = preact + xi
 
         h_next = (1.0 - self.alpha) * h_t + self.alpha * self.phi(preact)
         return h_next, F.linear(h_next, self.W_out_eff(), self.b_out)

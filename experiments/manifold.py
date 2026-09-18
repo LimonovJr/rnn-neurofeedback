@@ -14,6 +14,10 @@ was moved.
 share of the budget: the incremental training that makes outside-manifold learning succeed in
 monkeys, and the "proximal learning" the project was asked to test.
 
+`--auto` closes that loop. The read-out advances one rung only while behaviour on the next rung
+holds up, so the schedule is set by the network rather than by hand -- a decoder that follows the
+brain toward a mapping the brain does not yet have.
+
 The angle has to be calibrated first: a decision axis is fragile, and too large a rotation floors
 behaviour at once in both kinds, which leaves nothing to compare. `--updates 0` reports the
 immediate drop of every candidate and nothing else.
@@ -78,6 +82,36 @@ def score(model):
     return behaviour.measure(model, ENV, n=EVAL_N)
 
 
+def auto_ladder(model, a, d_intact, move_to, hook, schedule):
+    """Advance the read-out toward the target one rung at a time, and only while behaviour holds:
+    the next rung is tried, scored on a short evaluation, and kept if that score is at least
+    `a.auto_threshold` of the intact d'; otherwise the read-out stays where it is and the network
+    trains on. Records (update, position, probe d') at every decision and returns the rungs taken.
+    This is how incremental BCI training is paced in practice -- the mapping moves when the
+    subject can still perform."""
+    t, spent, rungs = 0.0, 0, 0
+    rung = a.rung / a.angle
+    while spent < a.updates:
+        if t < 1.0:
+            move_to(min(1.0, t + rung))
+            probe = behaviour.measure(model, ENV, n=500)
+            if probe >= a.auto_threshold * d_intact:
+                t = min(1.0, t + rung)
+                rungs += 1
+                print(f"  rung {rungs} -> t={t:.2f} at update {spent} (probe d'={probe:+.3f})",
+                      flush=True)
+            else:
+                move_to(t)
+            schedule.append((spent, t, probe))
+        block = min(a.block, a.updates - spent)
+        # the hook's own update-0 call would duplicate the previous block's last point
+        signals.train(model, a.cond, ENV, block, lr=a.lr, eval_every=a.eval_every,
+                      hook=lambda m, u, base=spent: hook(m, base + u) if u else None,
+                      anchor=a.anchor)
+        spent += block
+    return rungs
+
+
 def run(a):
     model = load(a.net)
     d_intact = score(model)
@@ -119,30 +153,38 @@ def run(a):
         curve.append(round(d, 4))
         print(f"  upd {offset + upd:5d}  d'={d:+.4f}", flush=True)
 
-    # a ladder of read-outs interpolated toward the target, each held for a share of the budget;
-    # the first point of every rung is the drop right after the read-out moved
-    n_steps = max(1, a.steps)
-    for s in range(1, n_steps + 1):
-        t = s / n_steps
+    def move_to(t):
         w = (1 - t) * w0 + t * w_target
         set_axis(model, w / w.norm() * w0.norm())
         recalibrate(model, states, margin0)
-        if s == 1:
-            d_pert = score(model)
-            upds.append(0)
-            curve.append(round(d_pert, 4))
-        budget = a.updates // n_steps
-        signals.train(model, a.cond, ENV, budget, lr=a.lr, eval_every=a.eval_every, hook=hook,
-                      anchor=a.anchor)
-        offset += budget
 
-    drift = float((decision_axis(model) - w_target / w_target.norm() * w0.norm()).abs().max())
-    assert drift < 1e-6, f"the read-out moved during relearning: {drift:.2e}"
+    schedule = []
+    if a.auto:
+        n_steps = auto_ladder(model, a, d_intact, move_to, hook, schedule)
+    else:
+        # a ladder of read-outs interpolated toward the target, each held for a share of the
+        # budget; the first point of every rung is the drop right after the read-out moved
+        n_steps = max(1, a.steps)
+        for s in range(1, n_steps + 1):
+            move_to(s / n_steps)
+            if s == 1:
+                upds.append(0)
+                curve.append(round(score(model), 4))
+            budget = a.updates // n_steps
+            signals.train(model, a.cond, ENV, budget, lr=a.lr, eval_every=a.eval_every,
+                          hook=hook, anchor=a.anchor)
+            offset += budget
+
+    if not a.auto:
+        drift = float((decision_axis(model) - w_target / w_target.norm() * w0.norm()).abs().max())
+        assert drift < 1e-6, f"the read-out moved during relearning: {drift:.2e}"
     runs.write(a.out, dict(net=a.net, kind=a.kind, angle=a.angle, candidate=a.candidate, rep=a.rep,
-                           cond=a.cond, steps=n_steps, updates=a.updates, lr=a.lr,
-                           anchor=f"{a.anchor:g}",
+                           cond=a.cond, steps=n_steps, auto=int(a.auto), updates=a.updates,
+                           lr=a.lr, anchor=f"{a.anchor:g}",
+                           schedule=runs.joined(f"{u}:{t:.3f}:{v:.3f}" for u, t, v in schedule),
                            basis_k=a.basis_k, explained=f"{explained:.3f}",
-                           d_intact=f"{d_intact:.4f}", d_perturbed=f"{curve[0]:.4f}",
+                           d_intact=f"{d_intact:.4f}",
+                           d_perturbed=f"{drops[a.candidate] if a.auto else curve[0]:.4f}",
                            candidate_drops=runs.joined(round(d, 3) for d in drops),
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve)))
     print(f"[manifold net{a.net} {a.kind} #{a.candidate}] recovered to {curve[-1]:+.3f} of "
@@ -161,6 +203,13 @@ def main():
     p.add_argument("--cond", choices=["reward", "control"], default="reward",
                    help="reward is the label-free relearning; control is the supervised reference")
     p.add_argument("--steps", type=int, default=1, help="intermediate read-outs on the way to the target")
+    p.add_argument("--auto", action="store_true",
+                   help="closed-loop ladder: advance a rung only once the network varies enough "
+                        "along the target direction")
+    p.add_argument("--rung", type=float, default=11.25, help="degrees per rung in auto mode")
+    p.add_argument("--block", type=int, default=250, help="updates between rung decisions in auto mode")
+    p.add_argument("--auto-threshold", type=float, default=0.5,
+                   help="fraction of the intact d' the next rung has to keep to be taken")
     p.add_argument("--updates", type=int, default=4000)
     p.add_argument("--eval-every", type=int, default=250)
     p.add_argument("--lr", type=float)
@@ -169,7 +218,8 @@ def main():
     p.add_argument("--out")
     a = p.parse_args()
     a.lr = a.lr or signals.LR[a.cond]
-    a.out = a.out or (f"results/manifold_{a.kind}_{a.cond}_a{a.angle:g}_s{a.steps}_net{a.net}"
+    ladder = "auto" if a.auto else f"s{a.steps}"
+    a.out = a.out or (f"results/manifold_{a.kind}_{a.cond}_a{a.angle:g}_{ladder}_net{a.net}"
                       f"_c{a.candidate}_r{a.rep}.csv")
     run(a)
 

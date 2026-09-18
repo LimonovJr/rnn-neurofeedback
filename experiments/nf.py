@@ -21,7 +21,7 @@ from collections import deque
 import numpy as np
 import torch
 
-from src import behaviour, representation, runs, signals, tasks
+from src import behaviour, local, representation, runs, signals, tasks
 from src.model import CKPT, load, save
 from src.training import TrainConfig, train_supervised
 
@@ -85,10 +85,16 @@ def run(a):
             adapt_decoder(m, env_fn, a.adapt_steps, a.adapt_lr)
 
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] {a.updates} updates, lr={a.lr}, "
-          f"lam={a.lam:g}, target={a.target}, anchor={a.anchor:g}", flush=True)
-    signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
-                  train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
-                  xy_from=a.target, anchor=a.anchor, basis=basis, kappa=a.kappa)
+          f"lam={a.lam:g}, target={a.target}, anchor={a.anchor:g}, rule={a.rule}", flush=True)
+    if a.rule == "local":
+        assert a.cond in ("reward", "reward_aux"), "the local rule learns from reward only"
+        local.train(model, env_fn, a.updates, lr=a.lr, explore=a.explore,
+                    aux_weight=a.lam if a.cond == "reward_aux" else 0.0,
+                    eval_every=a.eval_every, hook=hook, xy_from=a.target)
+    else:
+        signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
+                      train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
+                      xy_from=a.target, anchor=a.anchor, basis=basis, kappa=a.kappa)
 
     d_out = float((model.W_out.detach() - w_out0).abs().max())
     d_aux = float((model.W_aux.detach() - w_aux0).abs().max())
@@ -114,12 +120,14 @@ def run(a):
                            updates=a.updates, lr=a.lr, eval_n=a.eval_n,
                            train_decoder=int(a.train_decoder), target=a.target,
                            anchor=f"{a.anchor:g}", adapt_decoder=a.adapt_decoder or 0,
+                           rule=a.rule, explore=f"{a.explore:g}",
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
                            **start, **end),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
-                "target", "anchor", "adapt_decoder", "all_trials", "d0", "crossnobis", "pr",
+                "target", "anchor", "adapt_decoder", "rule", "explore", "all_trials", "d0",
+                "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_out", "dW_aux", "curve_upd", "curve_dprime"])
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] curve={curve}", flush=True)
 
@@ -147,6 +155,11 @@ def main():
                         "steps (co-adaptation); 0 keeps it frozen")
     p.add_argument("--adapt-steps", type=int, default=20)
     p.add_argument("--adapt-lr", type=float, default=1e-3)
+    p.add_argument("--rule", choices=["bptt", "local"], default="bptt",
+                   help="local = reward-modulated node perturbation on the recurrent weights, "
+                        "with the network's own noise as the exploration")
+    p.add_argument("--explore", type=float, default=1.0,
+                   help="scale on the recurrent noise while the local rule learns")
     p.add_argument("--basis-k", type=int, default=10, help="manifold rank for expand")
     p.add_argument("--kappa", type=float, default=1.5, help="stretch factor for expand")
     p.add_argument("--panel", action="store_true", help="also measure the representation")
@@ -163,8 +176,8 @@ def main():
     a.updates = a.updates or cfg["updates"]
     a.eval_every = a.eval_every or cfg["eval_every"]
     a.eval_n = a.eval_n or cfg["eval_n"]
-    a.lr = a.lr or signals.LR[a.cond]
-    tag = "" if a.target == "target" else "_cue"
+    a.lr = a.lr or (1e-4 if a.rule == "local" else signals.LR[a.cond])
+    tag = ("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
     a.out = a.out or (f"results/nf_{a.task}_{a.cond}_lam{a.lam:g}_n{a.eval_n}{tag}"
                       f"_net{a.net}_r{a.rep}.csv")
     run(a)
