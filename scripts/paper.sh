@@ -50,26 +50,32 @@ for anchor in 0.01 0.1; do for cond in control reward; do for net in 0 1 2; do
 done; done; done
 wait
 
-# 6a. Calibrate the perturbation angle: a decision axis is fragile, and too large a rotation floors
-#     behaviour at once in both kinds. Use the largest angle at which both kinds keep behaviour
-#     clearly above the floor.
-for angle in 15 30 45; do for kind in within outside; do
-    run "manifold_calib_${kind}_a$angle" -m experiments.manifold --net 0 --kind $kind \
-        --angle $angle --updates 0 --out results/manifold_calib_${kind}_a${angle}_net0.csv
+# 6a. Calibrate the perturbation angle. On net 0 the immediate d' is 1.15 / 0.63 / 0.06 for a
+#     within-manifold rotation of 15 / 30 / 45 degrees (intact 1.24), and 1.21 / 1.27 / 1.36 for
+#     an outside-manifold rotation of the same angles: the complement carries no variance, the
+#     decoder still reads cos(angle) of the in-manifold signal, and the recalibrated threshold
+#     absorbs the scaling. An outside perturbation only bites at 90 degrees, when nothing of the
+#     old axis is left. The two kinds are therefore matched at the floor -- within 45, outside 90
+#     -- and the ladder for outside climbs the angle. Re-run this block on any new network.
+for angle in 30 45 60 90; do for kind in within outside; do
+    run "manifold_calib_${kind}_a$angle" -m experiments.manifold --net 0 --kind $kind         --angle $angle --updates 0 --out results/manifold_calib_${kind}_a${angle}_net0.csv
 done; done
 wait
 
-# 6b. Within against outside manifold, relearned by reward alone, then the outside case as an
-#     incremental ladder. Prediction: within recovers, outside does not at this budget, the ladder
-#     does.
-ANGLE=30   # replace with the calibrated value from 6a
+# 6b. Within against outside manifold from a matched floor, relearned by reward alone, then the
+#     outside case as an incremental ladder. Prediction: within recovers, outside does not at
+#     this budget, the ladder does. The supervised reference says whether a failure to recover is
+#     the geometry or the weakness of the reward learner.
+WITHIN=45
+OUTSIDE=90
 for net in $NETS; do for c in 0 1 2; do
-    run "manifold_within_net${net}_c$c" -m experiments.manifold --net $net --kind within \
-        --angle $ANGLE --candidate $c
-    run "manifold_outside_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
-        --angle $ANGLE --candidate $c
-    run "manifold_ladder_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
-        --angle $ANGLE --candidate $c --steps 8
+    run "manifold_within_net${net}_c$c" -m experiments.manifold --net $net --kind within         --angle $WITHIN --candidate $c
+    run "manifold_outside_net${net}_c$c" -m experiments.manifold --net $net --kind outside         --angle $OUTSIDE --candidate $c
+    run "manifold_ladder_net${net}_c$c" -m experiments.manifold --net $net --kind outside         --angle $OUTSIDE --candidate $c --steps 8
+done; done
+wait
+for kind_angle in "within $WITHIN" "outside $OUTSIDE"; do set -- $kind_angle; for net in 0 1 2; do
+    run "manifold_${1}_control_net$net" -m experiments.manifold --net $net --kind $1         --angle $2 --candidate 0 --cond control
 done; done
 wait
 
