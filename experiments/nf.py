@@ -178,7 +178,13 @@ def main():
     a.eval_every = a.eval_every or cfg["eval_every"]
     a.eval_n = a.eval_n or cfg["eval_n"]
     a.lr = a.lr or (1e-4 if a.rule == "local" else signals.LR[a.cond])
-    tag = ("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
+    # every knob that changes what a run measures goes into its name, or a new condition would
+    # collide with an old result and be skipped as already done
+    tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
+           + (f"_anchor{a.anchor:g}" if a.anchor else "")
+           + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
+           + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
+           + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))
     a.out = a.out or (f"results/nf_{a.task}_{a.cond}_lam{a.lam:g}_n{a.eval_n}{tag}"
                       f"_net{a.net}_r{a.rep}.csv")
     if os.path.exists(a.out):
