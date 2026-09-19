@@ -198,6 +198,16 @@ block12() {
     wait
 }
 
+# 13. The one caveat on block 1: reward runs at lr 1e-4 and the control at 3e-4. The same control
+#     at the reward's learning rate, so the contrast differs only in the signal.
+block13() {
+    for net in $NETS; do for rep in 0 1; do
+        run "nf_c1_control_lr1e-4_net${net}_r$rep" -m experiments.nf --task c1 --cond control \
+            --net $net --rep $rep --lr 1e-4 --eval-n 10000
+    done; done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"
