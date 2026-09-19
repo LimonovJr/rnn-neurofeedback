@@ -358,7 +358,9 @@ def lam(args):
 
 
 def representation(args):
-    rows = runs.read(f"{args.results}/repr_context_*_net*.csv")
+    prefix = "repr_all_context" if args.all_trials else "repr_context"
+    rows = runs.read(f"{args.results}/{prefix}_*_net*.csv")
+    print(f"pool: {'every trial' if args.all_trials else 'correct trials only'}")
     conds = ("theta0", "control", "position", "joint", "reward")
     print(f"{'condition':<12}{'crossnobis':>12}{'XOR':>10}{'match':>10}{'context':>10}")
     table = {}
@@ -453,6 +455,8 @@ def main():
     p.add_argument("--results", default="results")
     p.add_argument("--reps", default="0,1")
     p.add_argument("--eval-n", type=int, default=1000, help="which evaluation size nf-c1 reads")
+    p.add_argument("--all-trials", action="store_true",
+                   help="representation: read the pass that pooled every trial")
     args = p.parse_args()
     TABLES[args.table](args)
 

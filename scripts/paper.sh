@@ -55,6 +55,19 @@ block4() {
     wait
 }
 
+# 4b. Block 4 again at a weight where the positional term actually acts. At lam 0.5 the
+#     positional error did not move (0.17 -> 0.17) because the policy-gradient term swamps it, so
+#     block 4 compared reward with reward. Calibration on context net 0, 1500 updates: lam 5 moves
+#     it slowly (0.21 -> 0.09), lam 20 clearly (0.18 -> 0.04) with behaviour intact, lam 50 moves it
+#     and floors behaviour.
+block4b() {
+    for task in context c1; do for net in $NETS; do for rep in 0 1; do
+        run "nf_${task}_reward_aux20_net${net}_r$rep" -m experiments.nf --task $task \
+            --cond reward_aux --net $net --rep $rep --target cue --lam 20 --eval-n 10000
+    done; done; done
+    wait
+}
+
 # 5. Lazy against rich: the same context runs with the recurrent weights anchored. Prediction
 #    from the BCI models: outside-manifold learning (the control on this task) slows or breaks
 #    while within-manifold relearning survives.
