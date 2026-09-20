@@ -13,9 +13,13 @@ import numpy as np
 
 from src import runs, stats
 
-RES_BEHAVIOUR = 0.05
-RES_CROSSNOBIS = 0.0086
-RES_PR = 0.060
+# what a repeat of the same measurement moves by, from `resolutions` on the networks and heads the
+# experiments run on: two standard deviations over ten repeats. The campaign was read against 0.05,
+# 0.0086 and 0.060, which came from an earlier checkpoint whose crossnobis scale was ten times
+# larger; every table below uses the measured ones.
+RES_BEHAVIOUR = 0.068
+RES_CROSSNOBIS = 0.0015
+RES_PR = 0.11
 
 SETTINGS = ["c1", "c1r1", "c1r3", "patch"]
 
@@ -227,8 +231,12 @@ def nf_c1(args):
     behaviour. Conditions that have no runs at that size are left out."""
     rows = runs.read(f"{args.results}/nf_c1_*_n{args.eval_n}_net*.csv")
     rows = [r for r in rows if int(r["updates"]) == 1200 and not int(r.get("adapt_decoder", 0) or 0)]
-    conds = [c for c in ("control", "position", "joint", "reward", "reward_aux", "expand")
+    for r in rows:                      # the expansion arms differ only in the gain they ask for
+        if r["cond"] == "expand":
+            r["cond"] = f"expand k{float(r.get('kappa') or 1.5):g}"
+    conds = [c for c in ("control", "position", "joint", "reward", "reward_aux")
              if any(r["cond"] == c for r in rows)]
+    conds += sorted({r["cond"] for r in rows if r["cond"].startswith("expand")})
     if "control" not in conds or len(conds) < 2:
         print("no control at this evaluation size, or nothing to compare it with")
         return
