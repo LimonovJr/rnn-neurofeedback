@@ -55,6 +55,7 @@ def run(a):
     cfg = DEFAULTS[a.task]
     env_fn = cfg["env"]
     model = load(a.net, head=a.task)
+    w_rec0 = model.W_rec.detach().clone()
     w_out0 = model.W_out.detach().clone()
     w_aux0 = model.W_aux.detach().clone()
     torch.manual_seed(a.rep)
@@ -91,6 +92,9 @@ def run(a):
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
                       xy_from=a.target, anchor=a.anchor, kappa=a.kappa)
 
+    # how far the run moved the weights at all, so that a signal that costs nothing can be told
+    # from one that asked for nothing
+    d_rec = float((model.W_rec.detach() - w_rec0).norm() / w_rec0.norm())
     d_out = float((model.W_out.detach() - w_out0).abs().max())
     d_aux = float((model.W_aux.detach() - w_aux0).abs().max())
     if not a.train_decoder and not a.adapt_decoder:
@@ -118,13 +122,14 @@ def run(a):
                            adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}",
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
-                           dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
+                           dW_rec=f"{d_rec:.4f}", dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
                            **start, **end),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "adapt_decoder", "rule", "explore", "all_trials", "d0",
                 "crossnobis", "pr",
-                "crossnobis_start", "pr_start", "dW_out", "dW_aux", "curve_upd", "curve_dprime"])
+                "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
+                "curve_upd", "curve_dprime"])
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] curve={curve}", flush=True)
 
 
