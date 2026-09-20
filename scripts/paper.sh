@@ -79,12 +79,13 @@ block5() {
     wait
 }
 
-# 5b. The same contrast on ten networks. Three networks gave a direction; this is the n the claim
-#     needs. The runs already done are skipped by name.
+# 5b. The same contrast on ten networks, at the anchor that separated the learners. anchor 0.01
+#     sat between the two and is left at its three networks; the anchor 0 level is read off the
+#     published context curves at 4000 updates, so only the anchored arm needs running.
 block5b() {
-    for anchor in 0.01 0.1; do for cond in control reward; do for net in 0 1 2 3 4 5 6 7 8 9; do
-        run "nf_context_${cond}_anchor${anchor}_net$net" -m experiments.nf --task context             --cond $cond --net $net --anchor $anchor --updates 4000
-    done; done; done
+    for cond in control reward; do for net in 0 1 2 3 4 5 6 7 8 9; do
+        run "nf_context_${cond}_anchor0.1_net$net" -m experiments.nf --task context             --cond $cond --net $net --anchor 0.1 --updates 4000
+    done; done
     wait
 }
 
