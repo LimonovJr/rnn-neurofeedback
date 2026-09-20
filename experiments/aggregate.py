@@ -442,11 +442,28 @@ def gradients(args):
               f"{np.mean([float(r['g_aux']) for r in cond_rows]):>10.2f}")
 
 
+def projection(args):
+    """Predicted against realised change in the task loss for a step of fixed length along each
+    gradient. The criterion is only meaningful where the two agree for both directions."""
+    rows = runs.read(f"{args.results}/grad_step_context_*_net*.csv")
+    lengths = sorted({r["_file"].split("_L")[1].split("_net")[0] for r in rows}, key=float)
+    print(f"{'length':<10}{'direction':<10}{'predicted':>11}{'realised':>11}{'r':>8}{'n':>5}")
+    for length in lengths:
+        at = [r for r in rows if f"_L{length}_" in r["_file"]]
+        for name in ("task", "aux"):
+            pred = [float(r[f"d_task_{name}_pred"]) for r in at]
+            real = [float(r[f"d_task_{name}_real"]) for r in at]
+            corr = np.corrcoef(pred, real)[0, 1] if len(pred) > 2 else float("nan")
+            print(f"{length:<10}{name:<10}{np.mean(pred):>+11.4f}{np.mean(real):>+11.4f}"
+                  f"{corr:>8.3f}{len(pred):>5d}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
           "manifold": manifold,
-          "representation": representation, "gradients": gradients}
+          "representation": representation, "gradients": gradients,
+          "projection": projection}
 
 
 def main():

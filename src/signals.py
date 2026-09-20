@@ -10,8 +10,8 @@ builds has to reach behaviour through a decoder that did not change.
     reward_aux  the same reinforcement plus the positional error at weight lam: the label-free
                 regime, where a dense representational signal can shape what a sparse reward alone
                 learns slowly
-    expand      no task signal at all: push each delay state outward along the manifold it already
-                lies on, penalising any component that leaves it -- a within-manifold target
+    expand      no task signal at all: make the frozen position head read the same positions
+                kappa times further apart -- a within-manifold target
 
 `anchor` adds a pull toward the starting recurrent weights, which is how the learning regime is
 moved from rich toward lazy without touching the learning rate.
@@ -34,17 +34,17 @@ ENTROPY = 0.05
 
 
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
-          hook=None, device="cpu", xy_from="target", anchor=0.0, basis=None, kappa=1.5):
+          hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
-    the decision read-out unless it is frozen. `basis` is the manifold the expand signal works
-    in, from `representation.delay_basis`, and `kappa` the factor it is stretched by."""
+    the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
+    frozen position head for."""
     lr = LR[cond] if lr is None else lr
     if cond == "reward":
         return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
-        step = expand_step(basis, lam, kappa)
+        step = expand_step(kappa)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -85,22 +85,16 @@ def reward_aux_step(lam):
     return step
 
 
-def expand_step(basis, lam, kappa=1.5):
-    """A homothetic target: every delay-mean state is pushed to kappa times the starting radius of
-    the manifold, along its own direction inside the top-k subspace, with any component that
-    leaves the subspace penalised. The target is fixed at the start, so the stretch is bounded."""
-    mu, P, target = basis["mu"], basis["P"], kappa * basis["radius"]
-
+def expand_step(kappa):
+    """A within-manifold target: ask the frozen position head to read the same positions, further
+    apart. The delay state is pushed until the head decodes kappa times the true position, so the
+    code is stretched along the directions the head already uses and nothing else is asked for.
+    At kappa = 1 this is the plain positional signal, which is what makes the gain the variable."""
     def step(model, batch):
-        x, _, _, _, _, delay_mask, _ = batch
+        x, _, _, _, xy_true, delay_mask, _ = batch
         _, _, h = model(x, return_hidden=True)
-        state = (h * delay_mask[:, :, None]).sum(1) / delay_mask.sum(1, keepdim=True).clamp_min(1)
-        centred = state - mu
-        z = centred @ P
-        radius = z.norm(dim=-1)
-        leak = ((centred - z @ P.T) ** 2).sum(-1).mean()
-        stretch = ((radius - target) ** 2).mean()
-        return stretch + lam * leak, {"radius": radius.detach().mean(), "leak": leak.detach()}
+        err = positional_error(model, h, kappa * xy_true, delay_mask)
+        return err, {"expand_err": err.detach()}
     return step
 
 

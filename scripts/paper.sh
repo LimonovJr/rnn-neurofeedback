@@ -79,6 +79,15 @@ block5() {
     wait
 }
 
+# 5b. The same contrast on ten networks. Three networks gave a direction; this is the n the claim
+#     needs. The runs already done are skipped by name.
+block5b() {
+    for anchor in 0.01 0.1; do for cond in control reward; do for net in 0 1 2 3 4 5 6 7 8 9; do
+        run "nf_context_${cond}_anchor${anchor}_net$net" -m experiments.nf --task context             --cond $cond --net $net --anchor $anchor --updates 4000
+    done; done; done
+    wait
+}
+
 # 6a. Calibrate the perturbation angle. On net 0 the immediate d' is 1.15 / 0.63 / 0.06 for a
 #     within-manifold rotation of 15 / 30 / 45 degrees (intact 1.24), and 1.21 / 1.27 / 1.36 for
 #     an outside-manifold rotation of the same angles: the complement carries no variance, the
@@ -118,19 +127,19 @@ block6() {
     wait
 }
 
-# 7. The within-manifold target itself: radial expansion of the delay manifold with no task
-#    signal. Prediction: crossnobis rises and, unlike the positional signal, coupling rises too.
-#    Calibrate on one network first: at the default learning rate the stretch costs behaviour
-#    within a few updates, so start at 1e-4 and kappa 1.2 and read the curve.
+# 7. The within-manifold target itself: the frozen position head is asked to read the same
+#    positions further apart, with no task signal. kappa 1 is the same target at its present size
+#    and is the control the gain is read against. Prediction: kappa 2 raises crossnobis where
+#    kappa 1 does not, and if any representational target can pay for itself behaviourally it is
+#    this one, because it asks for no direction the code does not already carry.
 block7() {
-    run "nf_c1_expand_calib" -m experiments.nf --task c1 --cond expand --net 0 --lr 1e-4 \
-        --kappa 1.2 --lam 1.0 --eval-n 2000 --eval-every 50 --updates 600 \
-        --out results/nf_c1_expand_calib_net0.csv
-    wait
-    for net in $NETS; do
-        run "nf_c1_expand_net$net" -m experiments.nf --task c1 --cond expand --net $net \
-            --lr 1e-4 --kappa 1.2 --lam 1.0 --eval-n 10000 --panel --all-trials
+    for kappa in 1 1.5 2; do
+        run "nf_c1_expand_calib_k$kappa" -m experiments.nf --task c1 --cond expand --net 0             --lr 1e-4 --kappa $kappa --eval-n 2000 --eval-every 50 --updates 600             --out results/nf_c1_expand_calib_k${kappa}_net0.csv
     done
+    wait
+    for kappa in 1 2; do for net in $NETS; do
+        run "nf_c1_expand_k${kappa}_net$net" -m experiments.nf --task c1 --cond expand             --net $net --lr 1e-4 --kappa $kappa --eval-n 10000 --panel --all-trials
+    done; done
     wait
 }
 
@@ -146,13 +155,14 @@ block8() {
     wait
 }
 
-# 9. The projection criterion, tested one step at a time on the saved context checkpoints. Two
-#    step sizes: at 1e-3 the realised change sits inside the batch noise of the held-out loss.
+# 9. The projection criterion, one step at a time on the saved context checkpoints. Steps of a
+#    fixed length in parameter space, over a ladder of lengths: scaled by a learning rate instead,
+#    the task step is far longer than the positional one and overshoots, which is what made the
+#    first attempt unreadable. The criterion holds if the realised change tracks the predicted one
+#    at the short end and for both directions.
 block9() {
-    for eta in 1e-3 1e-2; do for cond in theta0 control joint; do for net in $NETS; do
-        run "grad_step_${cond}_e${eta}_net$net" -m experiments.gradients --cond $cond \
-            --net $net --rep 0 --step $eta \
-            --out results/grad_step_context_${cond}_e${eta}_net${net}_r0.csv
+    for len in 0.003 0.01 0.03 0.1; do for cond in theta0 control joint; do for net in $NETS; do
+        run "grad_step_${cond}_L${len}_net$net" -m experiments.gradients --cond $cond             --net $net --rep 0 --step $len             --out results/grad_step_context_${cond}_L${len}_net${net}_r0.csv
     done; done; done
     wait
 }
@@ -167,23 +177,33 @@ block10() {
 
 # 11. The learning rule as a variable: reward alone against reward plus the positional term,
 #     learned by reward-modulated node perturbation instead of back-propagation. Prediction: under
-#     the local rule the positional term helps more than under BPTT, because it reduces the
-#     variance of a noise-based gradient estimate rather than diverting a budget. The learning
-#     rate and the exploration scale are calibrated on one network first.
+#     the local rule the positional term helps more than under back-propagation, because it reduces
+#     the variance of a noise-based gradient estimate rather than diverting a budget. The learning
+#     rate and the exploration scale are calibrated on one network first; 11 runs the calibration,
+#     11c the c1 contrast and 11x the context one.
 block11() {
     for lr in 3e-5 1e-4 3e-4; do for explore in 1 2; do
-        run "nf_c1_reward_local_lr${lr}_x${explore}" -m experiments.nf --task c1 --cond reward \
-            --rule local --lr $lr --explore $explore --net 0 --eval-n 2000 --updates 1200 \
-            --out results/nf_c1_reward_local_calib_lr${lr}_x${explore}_net0.csv
+        run "nf_c1_reward_local_lr${lr}_x${explore}" -m experiments.nf --task c1 --cond reward             --rule local --lr $lr --explore $explore --net 0 --eval-n 2000 --updates 1200             --out results/nf_c1_reward_local_calib_lr${lr}_x${explore}_net0.csv
     done; done
     wait
-    LR=1e-4       # replace with the calibrated pair
-    EXPLORE=1
-    for task in c1 context; do for cond in reward reward_aux; do for net in $NETS; do for rep in 0 1; do
-        run "nf_${task}_${cond}_local_net${net}_r$rep" -m experiments.nf --task $task --cond $cond \
-            --rule local --lr $LR --explore $EXPLORE --net $net --rep $rep --target cue \
-            --lam 0.5 --eval-n 10000
-    done; done; done; done
+}
+
+LOCAL_LR=${LOCAL_LR:-1e-4}
+LOCAL_EXPLORE=${LOCAL_EXPLORE:-1}
+
+block11c() {
+    for cond in reward reward_aux; do for net in $NETS; do for rep in 0 1; do
+        run "nf_c1_${cond}_local_net${net}_r$rep" -m experiments.nf --task c1 --cond $cond             --rule local --lr $LOCAL_LR --explore $LOCAL_EXPLORE --net $net --rep $rep             --target cue --lam 0.5 --eval-n 10000
+    done; done; done
+    wait
+}
+
+# one repeat on the context task: eight thousand updates a run is the budget that sets how much of
+# this fits in a day, and the c1 contrast carries the repeats
+block11x() {
+    for cond in reward reward_aux; do for net in $NETS; do
+        run "nf_context_${cond}_local_net${net}_r0" -m experiments.nf --task context --cond $cond             --rule local --lr $LOCAL_LR --explore $LOCAL_EXPLORE --net $net --rep 0             --target cue --lam 0.5 --eval-n 10000
+    done; done
     wait
 }
 

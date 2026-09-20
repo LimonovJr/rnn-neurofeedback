@@ -61,12 +61,6 @@ def run(a):
     np.random.seed(a.rep)
     outcome = None if a.all_trials else "correct"
 
-    basis = None
-    if a.cond == "expand":
-        basis = representation.delay_basis(model, env_fn, k=a.basis_k)
-        print(f"  manifold basis: k={a.basis_k} explains {basis['explained']:.3f} of delay "
-              f"variance, radius {basis['radius']:.3f} -> target x{a.kappa:g}", flush=True)
-
     start = {}
     if a.panel:
         p = representation.panel(model, env_fn, n_trials=a.panel_trials, bin_by=cfg["bin_by"],
@@ -95,7 +89,7 @@ def run(a):
     else:
         signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
-                      xy_from=a.target, anchor=a.anchor, basis=basis, kappa=a.kappa)
+                      xy_from=a.target, anchor=a.anchor, kappa=a.kappa)
 
     d_out = float((model.W_out.detach() - w_out0).abs().max())
     d_aux = float((model.W_aux.detach() - w_aux0).abs().max())
@@ -120,14 +114,15 @@ def run(a):
     runs.write(a.out, dict(task=a.task, cond=a.cond, lam=f"{a.lam:g}", net=a.net, rep=a.rep,
                            updates=a.updates, lr=a.lr, eval_n=a.eval_n,
                            train_decoder=int(a.train_decoder), target=a.target,
-                           anchor=f"{a.anchor:g}", adapt_decoder=a.adapt_decoder or 0,
+                           anchor=f"{a.anchor:g}", kappa=f"{a.kappa:g}",
+                           adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}",
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
                            **start, **end),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
-                "target", "anchor", "adapt_decoder", "rule", "explore", "all_trials", "d0",
+                "target", "anchor", "kappa", "adapt_decoder", "rule", "explore", "all_trials", "d0",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_out", "dW_aux", "curve_upd", "curve_dprime"])
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] curve={curve}", flush=True)
@@ -161,8 +156,8 @@ def main():
                         "with the network's own noise as the exploration")
     p.add_argument("--explore", type=float, default=1.0,
                    help="scale on the recurrent noise while the local rule learns")
-    p.add_argument("--basis-k", type=int, default=10, help="manifold rank for expand")
-    p.add_argument("--kappa", type=float, default=1.5, help="stretch factor for expand")
+    p.add_argument("--kappa", type=float, default=1.5,
+                   help="gain the expand signal asks the frozen position head for")
     p.add_argument("--panel", action="store_true", help="also measure the representation")
     p.add_argument("--panel-trials", type=int, default=2500)
     p.add_argument("--all-trials", action="store_true",
@@ -182,6 +177,7 @@ def main():
     # collide with an old result and be skipped as already done
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
            + (f"_anchor{a.anchor:g}" if a.anchor else "")
+           + (f"_k{a.kappa:g}" if a.cond == "expand" else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))
