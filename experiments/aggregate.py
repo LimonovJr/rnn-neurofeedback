@@ -465,6 +465,22 @@ def projection(args):
             print(f"{length:<10}{name:<10}{np.mean(pred):>+11.4f}{np.mean(real):>+11.4f}"
                   f"{corr:>8.3f}{len(pred):>5d}")
 
+    shortest = lengths[0]
+    print()
+    print(f"at length {shortest}, by condition: does the step along each gradient lower the "
+          f"task loss?")
+    print(f"{'condition':<10}{'cos':>8}{'rho':>8}{'direction':>12}{'realised':>11}{'SEM':>9}"
+          f"{'p':>8}{'lower':>8}")
+    for cond in sorted({r["cond"] for r in rows}):
+        at = [r for r in rows if r["cond"] == cond and f"_L{shortest}_" in r["_file"]]
+        for name in ("task", "aux"):
+            real = [float(r[f"d_task_{name}_real"]) for r in at]
+            mean, sem, p = stats.one_sample(real)
+            print(f"{cond:<10}{np.mean([float(r['cos']) for r in at]):>+8.3f}"
+                  f"{np.mean([float(r['rho']) for r in at]):>8.2f}{name:>12}"
+                  f"{mean:>+11.5f}{sem:>9.5f}{p:>8.3f}"
+                  f"{sum(v < 0 for v in real):>5d}/{len(real):<3d}")
+
 
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
