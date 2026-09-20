@@ -241,11 +241,11 @@ def nf_c1(args):
         print("no control at this evaluation size, or nothing to compare it with")
         return
 
-    coupling, level, cross, pr = {}, {}, {}, {}
+    coupling, level, cross, pr, moved = {}, {}, {}, {}, {}
     for cond in conds:
         cond_rows = [r for r in rows if r["cond"] == cond and (cond != "joint" or r["lam"] in ("1", "1.0"))]
         by = by_net(cond_rows, lambda r: r)
-        coupling[cond], level[cond], cross[cond], pr[cond] = {}, {}, {}, {}
+        coupling[cond], level[cond], cross[cond], pr[cond], moved[cond] = {}, {}, {}, {}, {}
         for net, group in by.items():
             values = []
             for r in group:
@@ -254,6 +254,8 @@ def nf_c1(args):
                                np.mean(curve_values[-6:])))
             coupling[cond][net] = float(np.mean([v[0] for v in values]))
             level[cond][net] = float(np.mean([v[1] for v in values]))
+            if all(r.get("dW_rec") for r in group):
+                moved[cond][net] = float(np.mean([float(r["dW_rec"]) for r in group]))
             if all(r["crossnobis"] for r in group):
                 cross[cond][net] = float(np.mean([float(r["crossnobis"]) for r in group]))
                 pr[cond][net] = float(np.mean([float(r["pr"]) for r in group]))
@@ -273,6 +275,12 @@ def nf_c1(args):
             mean, sem, p = stats.paired([data[cond][n] for n in nets], [data["control"][n] for n in nets])
             cells.append(f"{mean:+.4f} p={p:.3f} {stats.verdict(mean, p, res)[:3]:>3}")
         print(f"{name:<14}" + "".join(f"{c:>26}" for c in cells) + f"   {res}")
+
+    if any(moved[c] for c in conds):
+        print("\nhow far the recurrent weights moved, relative to their starting norm:")
+        for cond in conds:
+            if moved[cond]:
+                print(f"  {cond:<12}{np.mean(list(moved[cond].values())):.4f}")
 
     print("\nupdates to reach the coupling level, per condition:")
     for cond in conds:
