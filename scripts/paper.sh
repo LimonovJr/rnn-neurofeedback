@@ -156,6 +156,24 @@ block7b() {
     wait
 }
 
+# 7c. The arms of block 7 differ in how far they drag the recurrent weights (0.027 shuffled,
+#     0.030 at kappa 1, 0.035 at kappa 2), and across those fifteen runs the behavioural loss
+#     follows the weight movement better than it follows the change in the code -- with the
+#     movement held fixed, the code explains nothing. This matches the movement instead of the
+#     learning rate: the magnified target at a rate that should move the weights as far as the
+#     shuffled one does, and the shuffled target at a rate that should move them as far as the
+#     magnified one does. Prediction, if the movement is what matters: behaviour falls by the same
+#     amount inside each matched pair, although the code moves in opposite directions.
+block7c() {
+    for net in $NETS; do
+        run "nf_c1_expand_k2_slow_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 7.5e-5 --kappa 2 --eval-n 10000 --panel --all-trials
+        run "nf_c1_expand_shuf_fast_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 1.3e-4 --kappa 1 --shuffle --eval-n 10000 --panel --all-trials
+    done
+    wait
+}
+
 # 8. Co-adaptation: the decision read-out takes twenty supervised steps every 300 updates, with
 #    and without the reward signal in between. Prediction: neurofeedback plus a slowly adapting
 #    decoder beats the adapting decoder alone in updates-to-level.
