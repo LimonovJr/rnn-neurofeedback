@@ -90,7 +90,7 @@ def run(a):
     else:
         signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
-                      xy_from=a.target, anchor=a.anchor, kappa=a.kappa)
+                      xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle)
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
     # from one that asked for nothing
@@ -119,6 +119,7 @@ def run(a):
                            updates=a.updates, lr=a.lr, eval_n=a.eval_n,
                            train_decoder=int(a.train_decoder), target=a.target,
                            anchor=f"{a.anchor:g}", kappa=f"{a.kappa:g}",
+                           shuffle=int(a.shuffle),
                            adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}",
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
@@ -126,7 +127,8 @@ def run(a):
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
                            **start, **end),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
-                "target", "anchor", "kappa", "adapt_decoder", "rule", "explore", "all_trials", "d0",
+                "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
+                "all_trials", "d0",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
@@ -163,6 +165,9 @@ def main():
                    help="scale on the recurrent noise while the local rule learns")
     p.add_argument("--kappa", type=float, default=1.5,
                    help="gain the expand signal asks the frozen position head for")
+    p.add_argument("--shuffle", action="store_true",
+                   help="give the expand signal another trial's position: the same loss asking for "
+                        "a code that carries nothing")
     p.add_argument("--panel", action="store_true", help="also measure the representation")
     p.add_argument("--panel-trials", type=int, default=2500)
     p.add_argument("--all-trials", action="store_true",
@@ -182,7 +187,7 @@ def main():
     # collide with an old result and be skipped as already done
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
            + (f"_anchor{a.anchor:g}" if a.anchor else "")
-           + (f"_k{a.kappa:g}" if a.cond == "expand" else "")
+           + (f"_k{a.kappa:g}" if a.cond == "expand" else "") + ("_shuf" if a.shuffle else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

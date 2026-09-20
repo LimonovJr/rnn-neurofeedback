@@ -34,7 +34,7 @@ ENTROPY = 0.05
 
 
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
-          hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5):
+          hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
@@ -44,7 +44,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
-        step = expand_step(kappa)
+        step = expand_step(kappa, shuffle)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -85,14 +85,21 @@ def reward_aux_step(lam):
     return step
 
 
-def expand_step(kappa):
+def expand_step(kappa, shuffle=False):
     """A within-manifold target: ask the frozen position head to read the same positions, further
     apart. The delay state is pushed until the head decodes kappa times the true position, so the
     code is stretched along the directions the head already uses and nothing else is asked for.
-    At kappa = 1 this is the plain positional signal, which is what makes the gain the variable."""
+    At kappa = 1 this is the plain positional signal, which is what makes the gain the variable.
+
+    `shuffle` pairs each trial with another trial's position. The loss has the same form, the same
+    scale and the same reach into the weights, and the code it asks for carries no information, so
+    it separates the cost of improving the representation from the cost of training against a
+    representational loss at all."""
     def step(model, batch):
         x, _, _, _, xy_true, delay_mask, _ = batch
         _, _, h = model(x, return_hidden=True)
+        if shuffle:
+            xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
         err = positional_error(model, h, kappa * xy_true, delay_mask)
         return err, {"expand_err": err.detach()}
     return step

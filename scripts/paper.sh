@@ -144,6 +144,18 @@ block7() {
     wait
 }
 
+# 7b. The matched null for block 7: the same loss, at the same gain, asking each trial for another
+#     trial's position. It reaches the weights the same way and the code it asks for carries
+#     nothing, so it says whether the behavioural cost belongs to improving the representation or
+#     to training against a representational loss at all.
+block7b() {
+    for net in $NETS; do
+        run "nf_c1_expand_shuf_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 1e-4 --kappa 1 --shuffle --eval-n 10000 --panel --all-trials
+    done
+    wait
+}
+
 # 8. Co-adaptation: the decision read-out takes twenty supervised steps every 300 updates, with
 #    and without the reward signal in between. Prediction: neurofeedback plus a slowly adapting
 #    decoder beats the adapting decoder alone in updates-to-level.
