@@ -72,9 +72,12 @@ def train(model, env_fn, updates, lr=1e-4, aux_weight=0.0, explore=1.0, eval_eve
 
         with torch.no_grad():
             reward, rates = outcomes(logits.argmax(-1), y, fa, lengths)
+            # measured whether or not it is fed back, so that a run without the term is the
+            # manipulation check for a run with it
+            err = ((model.decode_xy(h) - xy_true) ** 2).sum(-1)
+            pos_err = (err * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
+            rates["pos_err"] = pos_err.mean()
             if aux_weight:
-                err = ((model.decode_xy(h) - xy_true) ** 2).sum(-1)
-                pos_err = (err * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
                 reward = reward - aux_weight * (pos_err - pos_err.mean()) / (pos_err.std() + 1e-6)
             advantage = reward - baseline
             baseline = BASELINE_DECAY * baseline + (1 - BASELINE_DECAY) * reward.mean().item()
@@ -92,6 +95,7 @@ def train(model, env_fn, updates, lr=1e-4, aux_weight=0.0, explore=1.0, eval_eve
         if upd % log_every == 0 or upd == 1:
             print(f"upd {upd:5d}  reward={history['reward'][-1]:+.3f}  hit={rates['hit']:.3f} "
                   f"fa={rates['false_alarm']:.3f} miss={rates['miss']:.3f} "
+                  f"pos_err={rates['pos_err']:.4f} "
                   f"|dW|={float((lr * step).abs().max()):.2e}", flush=True)
         if hook is not None and eval_every and upd % eval_every == 0:
             hook(model, upd)

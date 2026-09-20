@@ -192,6 +192,23 @@ block11() {
 LOCAL_LR=${LOCAL_LR:-1e-4}
 LOCAL_EXPLORE=${LOCAL_EXPLORE:-1}
 
+# 11a. The weight of the positional term under the local rule, with its manipulation check. The
+#      term enters as a standardised reward component, so its weight is already on the scale of the
+#      outcome reward and 0.5 should act -- but the rule is weak, and block 4 is the reminder that a
+#      term which does not move its own quantity tests nothing. Read the positional error in the
+#      logs: it has to fall against the reward-only run before the contrast means anything.
+block11a() {
+    for lam in 0.5 2; do
+        run "nf_c1_reward_aux_local_lam$lam" -m experiments.nf --task c1 --cond reward_aux \
+            --rule local --lr $LOCAL_LR --explore $LOCAL_EXPLORE --lam $lam --target cue \
+            --net 0 --eval-n 2000 --out results/nf_c1_reward_aux_local_calib_lam${lam}_net0.csv
+    done
+    run "nf_c1_reward_local_lam0" -m experiments.nf --task c1 --cond reward --rule local \
+        --lr $LOCAL_LR --explore $LOCAL_EXPLORE --target cue --net 0 --eval-n 2000 \
+        --out results/nf_c1_reward_local_calib_lam0_net0.csv
+    wait
+}
+
 block11c() {
     for cond in reward reward_aux; do for net in $NETS; do for rep in 0 1; do
         run "nf_c1_${cond}_local_net${net}_r$rep" -m experiments.nf --task c1 --cond $cond             --rule local --lr $LOCAL_LR --explore $LOCAL_EXPLORE --net $net --rep $rep             --target cue --lam 0.5 --eval-n 10000
