@@ -11,7 +11,11 @@ positional signal enters as a second, dense reward term, so the question the rul
 whether a representational signal helps a learner that estimates its gradient from noise -- where
 it should reduce the variance of that estimate rather than divert a budget.
 
-This is the rule of Legenstein et al. (2010) and Miconi (2017), in its simplest form.
+This is the rule of Legenstein et al. (2010) and Miconi (2017), in its simplest form. With
+`explore_k` the noise is confined to the top principal directions of the network's own activity,
+which is what makes a noise-based estimate affordable in a large network (Kang, Richards and
+Sabatini 2026): isotropic noise has to cover every direction a unit can move in, most of which the
+dynamics never visit.
 """
 
 from collections import defaultdict
@@ -47,12 +51,30 @@ def outcomes(actions, y, fa, lengths):
     return reward, rates
 
 
-def train(model, env_fn, updates, lr=1e-4, aux_weight=0.0, explore=1.0, eval_every=None,
-          hook=None, xy_from="target", device="cpu", log_every=50):
-    """`explore` scales the recurrent noise during learning only; `aux_weight` adds the
-    standardised negative positional error to the trial reward."""
+def activity_basis(model, env_fn, k, n=256, device="cpu"):
+    """The top-k principal directions of the hidden state over every real time step of a batch."""
+    x, _, _, _, _, _, lengths = trials.batch(env_fn, n, int(model.dt), device=device,
+                                             window_ms=WINDOW_MS)
+    with torch.no_grad():
+        _, _, h = model(x, return_hidden=True)
+    valid = torch.arange(x.shape[1], device=device)[None, :] < lengths[:, None]
+    states = h[valid]
+    _, s, vt = torch.linalg.svd(states - states.mean(0), full_matrices=False)
+    explained = float((s[:k] ** 2).sum() / (s ** 2).sum())
+    return vt[:k].T.contiguous(), explained
+
+
+def train(model, env_fn, updates, lr=1e-4, aux_weight=0.0, explore=1.0, explore_k=0,
+          eval_every=None, hook=None, xy_from="target", device="cpu", log_every=50):
+    """`explore` scales the recurrent noise during learning only; `explore_k` confines it to the
+    top-k directions of the network's activity; `aux_weight` adds the standardised negative
+    positional error to the trial reward."""
     for p in model.parameters():
         p.requires_grad_(False)
+    if explore_k:
+        model.noise_basis, explained = activity_basis(model, env_fn, explore_k, device=device)
+        print(f"  exploration confined to {explore_k} directions, {explained:.3f} of the "
+              f"activity variance", flush=True)
     sigma = model.sigma_eff.clone()
     model.sigma_eff.mul_(explore)
     baseline = 0.0
@@ -101,6 +123,7 @@ def train(model, env_fn, updates, lr=1e-4, aux_weight=0.0, explore=1.0, eval_eve
             hook(model, upd)
 
     model.sigma_eff.copy_(sigma)
+    model.noise_basis = None
     for p in model.parameters():
         p.requires_grad_(True)
     return dict(history)

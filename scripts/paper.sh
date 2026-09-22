@@ -288,6 +288,52 @@ block13b() {
     wait
 }
 
+# 14. The positional signal with a gate: joint, with the positional gradient admitted only on the
+#     updates where it points the same way as the task gradient (Du et al. 2018). Block 9 showed
+#     the positional gradient helps at the start and stops helping once trained on; a gate that
+#     follows the cosine should take what help there is and refuse the rest. Prediction: gated is
+#     never below the control, where joint is -0.38 on context, and the gate closes more often as
+#     training goes on. Compared against the published control and joint runs on the same seeds.
+block14() {
+    for net in $NETS; do for rep in 0 1; do
+        run "nf_c1_gated_net${net}_r$rep" -m experiments.nf --task c1 --cond gated --net $net \
+            --rep $rep --eval-n 10000
+    done; done
+    for net in $NETS; do for rep in 0 1; do
+        run "nf_context_gated_cue_net${net}_r$rep" -m experiments.nf --task context --cond gated \
+            --net $net --rep $rep --target cue
+    done; done
+    wait
+}
+
+# 15. Why reward wins: on-policy reinforcement is expected to reach the solution closest to where
+#     it started, and so to disturb least what the network could already do (Shenfeld et al. 2025).
+#     Reward and control at the same rate, with the policy shift on c1 and the pretraining task and
+#     the patch cell scored before and after through the same read-out. Prediction: reward shifts
+#     the c1 policy less per unit of behaviour gained and leaves the other two at least as good.
+block15() {
+    for cond in reward control; do for net in $NETS; do for rep in 0 1; do
+        run "nf_c1_${cond}_retention_net${net}_r$rep" -m experiments.nf --task c1 --cond $cond \
+            --net $net --rep $rep --lr 1e-4 --eval-n 10000 --retention
+    done; done; done
+    wait
+}
+
+# 16. The local rule with its exploration confined to the activity manifold (Kang, Richards and
+#     Sabatini 2026): ten directions carry nearly all of the activity variance, so an isotropic
+#     perturbation of 180 units spends almost all of its variance where the dynamics never go.
+#     Calibration on net 0 first, with the positional term in half the runs as the manipulation
+#     check: the positional error has to fall before the contrast of block 11 can be run again.
+block16() {
+    for lr in 1e-4 1e-3; do for explore in 1 3; do for cond in reward reward_aux; do
+        run "nf_c1_${cond}_npk10_lr${lr}_x$explore" -m experiments.nf --task c1 --cond $cond \
+            --rule local --explore-k 10 --lr $lr --explore $explore --lam 2 --target cue \
+            --net 0 --eval-n 2000 \
+            --out results/nf_c1_${cond}_npk10_calib_lr${lr}_x${explore}_net0.csv
+    done; done; done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"

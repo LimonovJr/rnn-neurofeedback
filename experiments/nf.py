@@ -22,12 +22,14 @@ from collections import deque
 import numpy as np
 import torch
 
-from src import behaviour, local, representation, runs, signals, tasks
+from src import behaviour, local, representation, runs, signals, tasks, trials
 from src.model import CKPT, load, save
 from src.training import TrainConfig, train_supervised
 
 K = 6                              # checkpoints averaged into the reported level
-CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand"]
+CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "gated"]
+# what the network could already do before the run, scored through the same decision read-out
+RETENTION = {"pretrain": tasks.stage(2), "patch": tasks.patch()}
 DEFAULTS = {
     "c1": dict(env=tasks.sameloc(*tasks.C1), score=behaviour.detection, bin_by="target",
                updates=1200, eval_every=150, eval_n=1000),
@@ -51,12 +53,30 @@ def adapt_decoder(model, env_fn, steps, lr):
         p.requires_grad_(trainable[id(p)])
 
 
+def policy_shift(start, end, env_fn, n=256):
+    """How far the run moved the network's policy on the task it trained on: the KL from the
+    starting release probabilities to the final ones, per real time step. On-policy reinforcement
+    is expected to find the solution closest to where it started (Shenfeld et al. 2025)."""
+    x, _, _, _, _, _, lengths = trials.batch(env_fn, n, int(start.dt), window_ms=signals.WINDOW_MS)
+    with torch.no_grad():
+        p = torch.log_softmax(start(x, return_hidden=True)[0], -1)
+        q = torch.log_softmax(end(x, return_hidden=True)[0], -1)
+    kl = (p.exp() * (p - q)).sum(-1)
+    valid = torch.arange(x.shape[1])[None, :] < lengths[:, None]
+    return float(kl[valid].mean())
+
+
+def retention(model, n):
+    return {name: round(behaviour.measure(model, env, n=n), 4) for name, env in RETENTION.items()}
+
+
 def run(a):
     cfg = DEFAULTS[a.task]
     env_fn = cfg["env"]
     model = load(a.net, head=a.task)
     w_rec0 = model.W_rec.detach().clone()
     w_out0 = model.W_out.detach().clone()
+    start_model = copy.deepcopy(model) if a.retention else None
     w_aux0 = model.W_aux.detach().clone()
     torch.manual_seed(a.rep)
     np.random.seed(a.rep)
@@ -68,6 +88,10 @@ def run(a):
                                  outcome=outcome)
         start = dict(crossnobis_start=round(p["crossnobis"], 4), pr_start=round(p["pr"], 4))
         print(f"  start panel: crossnobis={p['crossnobis']:.4f} pr={p['pr']:.3f}", flush=True)
+
+    kept_before = retention(model, a.eval_n) if a.retention else {}
+    if kept_before:
+        print(f"  retention at the start: {kept_before}", flush=True)
 
     upds, curve, kept = [], [], deque(maxlen=K)
 
@@ -84,7 +108,7 @@ def run(a):
           f"lam={a.lam:g}, target={a.target}, anchor={a.anchor:g}, rule={a.rule}", flush=True)
     if a.rule == "local":
         assert a.cond in ("reward", "reward_aux"), "the local rule learns from reward only"
-        local.train(model, env_fn, a.updates, lr=a.lr, explore=a.explore,
+        local.train(model, env_fn, a.updates, lr=a.lr, explore=a.explore, explore_k=a.explore_k,
                     aux_weight=a.lam if a.cond == "reward_aux" else 0.0,
                     eval_every=a.eval_every, hook=hook, xy_from=a.target)
     else:
@@ -100,6 +124,14 @@ def run(a):
     if not a.train_decoder and not a.adapt_decoder:
         assert d_out == 0.0, f"the decision read-out moved: {d_out:.3e}"
     assert d_aux == 0.0, f"the position head moved: {d_aux:.3e}"
+
+    kept_after = {}
+    if a.retention:
+        model.eval()
+        kept_after = dict(kl_task=round(policy_shift(start_model, model, env_fn), 6),
+                          **{f"{k}_start": v for k, v in kept_before.items()},
+                          **{f"{k}_end": v for k, v in retention(model, a.eval_n).items()})
+        print(f"  retention at the end: {kept_after}", flush=True)
 
     end = {}
     if a.panel:
@@ -121,14 +153,15 @@ def run(a):
                            anchor=f"{a.anchor:g}", kappa=f"{a.kappa:g}",
                            shuffle=int(a.shuffle),
                            adapt_decoder=a.adapt_decoder or 0,
-                           rule=a.rule, explore=f"{a.explore:g}",
+                           rule=a.rule, explore=f"{a.explore:g}", explore_k=a.explore_k,
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_rec=f"{d_rec:.4f}", dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
-                           **start, **end),
+                           **start, **end, **kept_after),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
-                "all_trials", "d0",
+                "explore_k", "all_trials", "d0",
+                "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
@@ -163,6 +196,11 @@ def main():
                         "with the network's own noise as the exploration")
     p.add_argument("--explore", type=float, default=1.0,
                    help="scale on the recurrent noise while the local rule learns")
+    p.add_argument("--explore-k", type=int, default=0,
+                   help="confine the local rule's exploration to the top-k activity directions")
+    p.add_argument("--retention", action="store_true",
+                   help="also score the pretraining task and the patch cell before and after the "
+                        "run, and the policy shift on the trained task")
     p.add_argument("--kappa", type=float, default=1.5,
                    help="gain the expand signal asks the frozen position head for")
     p.add_argument("--shuffle", action="store_true",
@@ -188,6 +226,7 @@ def main():
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
            + (f"_anchor{a.anchor:g}" if a.anchor else "")
            + (f"_k{a.kappa:g}" if a.cond == "expand" else "") + ("_shuf" if a.shuffle else "")
+           + (f"_npk{a.explore_k}" if a.explore_k else "") + ("_ret" if a.retention else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

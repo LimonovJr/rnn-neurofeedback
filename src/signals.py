@@ -12,6 +12,8 @@ builds has to reach behaviour through a decoder that did not change.
                 learns slowly
     expand      no task signal at all: make the frozen position head read the same positions
                 kappa times further apart -- a within-manifold target
+    gated       joint, with the positional term switched on only on the updates where its
+                gradient points the same way as the task's (Du et al. 2018)
 
 `anchor` adds a pull toward the starting recurrent weights, which is how the learning regime is
 moved from rich toward lazy without touching the learning rate.
@@ -26,7 +28,7 @@ from src import trials
 from src.training import cross_entropy
 
 LR = {"control": 3e-4, "position": 3e-4, "joint": 3e-4, "reward": 1e-4, "reward_aux": 1e-4,
-      "expand": 3e-4}
+      "expand": 3e-4, "gated": 3e-4}
 BATCH = 48
 WINDOW_MS = (-300, 0)
 TASK_WEIGHT = 0.2                                # position's task term, a fifth of the control's
@@ -45,6 +47,8 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
         step = expand_step(kappa, shuffle)
+    elif cond == "gated":
+        step = gated_step(lam)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -102,6 +106,30 @@ def expand_step(kappa, shuffle=False):
             xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
         err = positional_error(model, h, kappa * xy_true, delay_mask)
         return err, {"expand_err": err.detach()}
+    return step
+
+
+def gated_step(lam):
+    """The joint signal with the positional term admitted only while it helps. On each batch the
+    two gradients are taken separately; the positional one is added when its cosine with the task
+    gradient is positive and dropped otherwise. The loss handed back is a surrogate whose gradient
+    is exactly that sum, so the optimiser, the clipping and the anchor treat it like any other."""
+    def step(model, batch):
+        x, y, mask, _, xy_true, delay_mask, _ = batch
+        logits, _, h = model(x, return_hidden=True)
+        ce = cross_entropy(logits, y, mask)
+        pos_err = positional_error(model, h, xy_true, delay_mask)
+        params = [p for p in model.parameters() if p.requires_grad]
+        filled = lambda gs: [torch.zeros_like(p) if g is None else g for p, g in zip(params, gs)]
+        g_task = filled(torch.autograd.grad(ce, params, retain_graph=True, allow_unused=True))
+        g_aux = filled(torch.autograd.grad(pos_err, params, allow_unused=True))
+        dot = sum((a * b).sum() for a, b in zip(g_task, g_aux))
+        norm = lambda gs: torch.sqrt(sum((g ** 2).sum() for g in gs))
+        cos = dot / (norm(g_task) * norm(g_aux)).clamp_min(1e-12)
+        gate = float(cos > 0)
+        surrogate = sum((p * (a + gate * lam * b)).sum() for p, a, b in zip(params, g_task, g_aux))
+        return surrogate, {"ce": ce.detach(), "pos_err": pos_err.detach(), "cos": cos.detach(),
+                           "gate": torch.tensor(gate)}
     return step
 
 
