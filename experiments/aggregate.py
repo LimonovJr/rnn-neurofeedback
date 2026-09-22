@@ -12,6 +12,7 @@ from collections import defaultdict
 import numpy as np
 
 from src import runs, stats
+from src.signals import LR
 
 # what a repeat of the same measurement moves by, from `resolutions` on the networks and heads the
 # experiments run on: two standard deviations over ten repeats. The campaign was read against 0.05,
@@ -184,7 +185,7 @@ def labelfree(args):
     reps = [int(s) for s in args.reps.split(",")]
     for task in ("c1", "context"):
         rows = [r for r in runs.read(f"{args.results}/nf_{task}_reward*_net*.csv")
-                if int(r["eval_n"]) == 10000]
+                if int(r["eval_n"]) == 10000 and published(r, target=r.get("target"))]
         base = levels([r for r in rows if r["cond"] == "reward"], reps)
         if not base:
             continue
@@ -230,11 +231,11 @@ def nf_c1(args):
     1000 is the published stage with its representation panel, 10000 the properly measured
     behaviour. Conditions that have no runs at that size are left out."""
     rows = runs.read(f"{args.results}/nf_c1_*_n{args.eval_n}_net*.csv")
-    rows = [r for r in rows if int(r["updates"]) == 1200 and not int(r.get("adapt_decoder", 0) or 0)]
+    rows = [r for r in rows if published(r)]
     for r in rows:                      # the expansion arms differ only in the gain they ask for
         if r["cond"] == "expand":
             r["cond"] = f"expand k{float(r.get('kappa') or 1.5):g}"
-    conds = [c for c in ("control", "position", "joint", "reward", "reward_aux")
+    conds = [c for c in ("control", "position", "joint", "reward", "reward_aux", "gated")
              if any(r["cond"] == c for r in rows)]
     conds += sorted({r["cond"] for r in rows if r["cond"].startswith("expand")})
     if "control" not in conds or len(conds) < 2:
@@ -301,6 +302,21 @@ def nf_c1(args):
               f"{np.mean([coupling['reward'][n] - coupling['control'][n] for n in nets]):+.3f})")
 
 
+BUDGET = {"c1": 1200, "context": 8000}
+
+
+def published(r, target="target"):
+    """The registered protocol: the stimulus target, no anchor, no decoder co-adaptation,
+    back-propagation, the condition's own learning rate, the full budget. Later runs share the file pattern and vary one of these;
+    the repeats run for other questions (weight movement, retention) are left out too, so the
+    published tables stay what they were."""
+    return (int(r["updates"]) == BUDGET[r["task"]] and float(r["lr"]) == LR[r["cond"]]
+            and r.get("target") in (target, "", None)
+            and float(r.get("anchor") or 0) == 0 and not int(r.get("adapt_decoder") or 0)
+            and r.get("rule") in ("bptt", "", None) and "_move_" not in r["_file"]
+            and not r.get("kl_task"))
+
+
 def levels(rows, reps, k=6):
     """Level at the budget per network: mean of the last k re-evaluations, averaged over repeats."""
     out = defaultdict(list)
@@ -313,7 +329,7 @@ def levels(rows, reps, k=6):
 
 
 def nf_context(args):
-    rows = runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv")
+    rows = [r for r in runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv") if published(r)]
     conds = ("control", "position", "joint", "reward")
     reps = [int(s) for s in args.reps.split(",")]
     table = {c: levels([r for r in rows if r["cond"] == c], reps) for c in conds}
@@ -354,7 +370,7 @@ def nf_context(args):
 def lam(args):
     for task in ("context", "c1"):
         rows = runs.read(f"{args.results}/nf_{task}_*_lam*_net*.csv")
-        rows = [r for r in rows if int(r["eval_n"]) == 10000]
+        rows = [r for r in rows if int(r["eval_n"]) == 10000 and published(r)]
         if not rows:
             continue
         print(f"\n{task}: level at the budget by lambda")
@@ -412,7 +428,7 @@ def behaviour_vs_code(args, table):
     The levels come from the runs that produced the checkpoints the representation pass read, so the
     two quantities are measured on the same weights.
     """
-    rows = runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv")
+    rows = [r for r in runs.read(f"{args.results}/nf_context_*_lam1_*_net*.csv") if published(r)]
     reps = [int(s) for s in args.reps.split(",")]
     conds = [c for c in table if c != "theta0"]
     cells = []
