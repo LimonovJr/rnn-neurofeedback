@@ -555,7 +555,7 @@ def movement(args):
 def retention(args):
     """Reward against control on c1 at the same rate: how far each moved the weights and the
     policy, and what happened to the tasks that share the read-out."""
-    rows = runs.read(f"{args.results}/nf_c1_*_ret_net*.csv")
+    rows = runs.read(f"{args.results}/nf_c1_*_ret_*net*.csv")
     per = defaultdict(lambda: defaultdict(list))
     for r in rows:
         values = curve(r)[1]
