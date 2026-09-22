@@ -11,8 +11,8 @@ recalibrated after each change, so the two differ in geometry rather than in how
 was moved.
 
 `--steps` runs the outside-manifold case as a ladder of intermediate read-outs, each trained for a
-share of the budget: the incremental training that makes outside-manifold learning succeed in
-monkeys, and the "proximal learning" the project was asked to test.
+share of the budget: the incremental training under which outside-manifold BCI mappings become
+learnable (Oby et al. 2019), and the proximal-learning idea in its simplest form.
 
 `--auto` closes that loop. The read-out advances one rung only while behaviour on the next rung
 holds up, so the schedule is set by the network rather than by hand -- a decoder that follows the

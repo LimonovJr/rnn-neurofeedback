@@ -55,6 +55,33 @@ supervised training at the same budget — joint minus control −0.300 (p = 0.0
 control −0.505 (p = 0.005) — and the follow-up measurements attribute the deficit to the signals
 building the conjunction the task needs slightly more slowly, not to their building the wrong code.
 
+### Follow-up: what the signal is credited through
+
+The follow-up runs in `scripts/paper.sh` turn that negative result into a contrast. On the
+small-headroom task, reward on the trial outcome, fed back through the frozen decoder, beats
+supervised training of the same weights at the same learning rate and budget:
+
+| | reward − control | |
+|---|---|---|
+| level at 1200 updates, 10 000-trial evaluation | +0.251 ± 0.059, p = 0.013 | five of five networks |
+| same, independent repeat | +0.282 ± 0.065, p = 0.012 | |
+| recurrent weight movement | −0.0059 ± 0.0017, p = 0.028 | reward moves them less |
+| behaviour gained per unit of movement | ×4.2, p = 0.0096 | |
+| with the decoder re-fitted every 300 updates | +0.086, p = 0.37 | the advantage needs a fixed read-out |
+
+Every signal aimed at the representation goes the other way, including one with no task term at
+all. Asking the frozen position head to read the same positions twice as far apart improves the
+code by far more than its resolution (crossnobis +0.04 against 0.0015) and costs 1.4–1.7 of d′. A
+matched null that asks each trial for another trial's position — the same loss, moving the weights
+as far, asking for a code that carries nothing — pays part of that cost too; at equal movement the
+magnified target costs another −0.53 (p = 0.026) on top. Supervised training through the decoder
+moves the weights as far as that null does and gains behaviour instead.
+
+A single step along the positional gradient lowers the task loss at the start on five of five
+networks and stops doing so once the signal has been trained on, and a decoder that advances
+toward an outside-manifold mapping only while behaviour holds reaches it without ever dropping the
+network to the floor (0 of 15 runs, against 9 of 15 for the direct jump).
+
 ## Layout
 
 ```
