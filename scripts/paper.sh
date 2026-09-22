@@ -276,6 +276,18 @@ block13() {
     wait
 }
 
+# 13b. Block 13 again, one repeat, now that runs record how far they move the recurrent weights.
+#      Block 7 showed that a signal can cost behaviour in proportion to that movement alone, so the
+#      reward advantage has to be read against it: does reward win by moving the weights less, or
+#      by moving them as far in directions the frozen decoder credits?
+block13b() {
+    for cond in reward control; do for net in $NETS; do
+        run "nf_c1_${cond}_move_net$net" -m experiments.nf --task c1 --cond $cond --net $net \
+            --rep 0 --lr 1e-4 --eval-n 10000 --out results/nf_c1_${cond}_move_net${net}_r0.csv
+    done; done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"
