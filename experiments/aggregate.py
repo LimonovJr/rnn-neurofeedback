@@ -552,12 +552,43 @@ def movement(args):
              per_move=True)
 
 
+def retention(args):
+    """Reward against control on c1 at the same rate: how far each moved the weights and the
+    policy, and what happened to the tasks that share the read-out."""
+    rows = runs.read(f"{args.results}/nf_c1_*_ret_net*.csv")
+    per = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        values = curve(r)[1]
+        moved, kl = float(r["dW_rec"]), float(r["kl_task"])
+        for key, value in (("level", float(np.mean(values[-6:]))), ("moved", moved), ("kl", kl),
+                           ("kl per movement", kl / moved),
+                           ("pretraining task", float(r["pretrain_end"]) - float(r["pretrain_start"])),
+                           ("patch cell", float(r["patch_end"]) - float(r["patch_start"]))):
+            per[(r["cond"], int(r["net"]))][key].append(value)
+    if not any(c == "reward" for c, _ in per) or not any(c == "control" for c, _ in per):
+        print("needs reward and control runs with --retention")
+        return
+    nets = sorted({n for c, n in per if c == "reward"} & {n for c, n in per if c == "control"})
+    value = lambda cond, n, key: float(np.mean(per[(cond, n)][key]))
+    print(f"{'quantity':<20}{'reward':>9}{'control':>9}{'difference':>12}{'SEM':>8}{'p':>8}")
+    for key in ("level", "moved", "kl", "kl per movement", "pretraining task", "patch cell"):
+        a = [value("reward", n, key) for n in nets]
+        b = [value("control", n, key) for n in nets]
+        mean, sem, p = stats.paired(a, b)
+        print(f"{key:<20}{np.mean(a):>+9.4f}{np.mean(b):>+9.4f}{mean:>+12.4f}{sem:>8.4f}{p:>8.4f}")
+    print("\nchange on the shared-read-out tasks against their starting level:")
+    for cond in ("reward", "control"):
+        for key in ("pretraining task", "patch cell"):
+            mean, sem, p = stats.one_sample([value(cond, n, key) for n in nets])
+            print(f"  {cond:<8}{key:<18}{mean:>+8.3f} +- {sem:.3f}  p = {p:.4f}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
           "manifold": manifold,
           "representation": representation, "gradients": gradients,
-          "projection": projection, "movement": movement}
+          "projection": projection, "movement": movement, "retention": retention}
 
 
 def main():
