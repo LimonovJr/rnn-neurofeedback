@@ -490,12 +490,58 @@ def projection(args):
                   f"{sum(v < 0 for v in real):>5d}/{len(real):<3d}")
 
 
+def movement(args):
+    """How far each c1 signal moved the recurrent weights, against what it did to the code and to
+    behaviour: the expansion arms with their shuffled null, and reward against control."""
+    def arm(pattern):
+        out = {}
+        for r in runs.read(f"{args.results}/{pattern}"):
+            values = curve(r)[1]
+            out[int(r["net"])] = dict(
+                behaviour=float(np.mean(values[-6:])) - values[0], moved=float(r["dW_rec"]),
+                code=float(r["crossnobis"]) - float(r["crossnobis_start"]) if r["crossnobis"] else None)
+        return out
+
+    arms = {"shuffled, lr 1e-4": arm("nf_c1_expand_*_k1_shuf_lr0.0001_net*.csv"),
+            "shuffled, lr 1.3e-4": arm("nf_c1_expand_*_k1_shuf_lr0.00013_net*.csv"),
+            "kappa 1, lr 1e-4": arm("nf_c1_expand_*_k1_lr0.0001_net*.csv"),
+            "kappa 2, lr 7.5e-5": arm("nf_c1_expand_*_k2_lr7.5e-05_net*.csv"),
+            "kappa 2, lr 1e-4": arm("nf_c1_expand_*_k2_lr0.0001_net*.csv"),
+            "control, lr 1e-4": arm("nf_c1_control_move_net*.csv"),
+            "reward, lr 1e-4": arm("nf_c1_reward_move_net*.csv")}
+    arms = {k: v for k, v in arms.items() if v}
+    print(f"{'arm':<22}{'n':>3}{'moved':>9}{'code':>10}{'behaviour':>11}")
+    for name, a in arms.items():
+        codes = [v["code"] for v in a.values() if v["code"] is not None]
+        print(f"{name:<22}{len(a):>3}{np.mean([v['moved'] for v in a.values()]):>9.4f}"
+              + (f"{np.mean(codes):>+10.4f}" if codes else f"{'':>10}")
+              + f"{np.mean([v['behaviour'] for v in a.values()]):>+11.3f}")
+
+    def contrast(label, x, y, key, per_move=False):
+        if x not in arms or y not in arms:
+            return
+        nets = sorted(set(arms[x]) & set(arms[y]))
+        value = (lambda a, n: a[n][key] / a[n]["moved"]) if per_move else (lambda a, n: a[n][key])
+        mean, sem, p = stats.paired([value(arms[x], n) for n in nets], [value(arms[y], n) for n in nets])
+        print(f"  {label:<48}{mean:>+9.3f} +- {sem:.3f}  p = {p:.4f}")
+
+    print("\nat matched movement:")
+    contrast("kappa 1 - shuffled (1.3e-4), behaviour", "kappa 1, lr 1e-4", "shuffled, lr 1.3e-4", "behaviour")
+    contrast("kappa 2 (7.5e-5) - shuffled (1.3e-4), behaviour", "kappa 2, lr 7.5e-5",
+             "shuffled, lr 1.3e-4", "behaviour")
+    print("reward against control:")
+    contrast("behaviour gained", "reward, lr 1e-4", "control, lr 1e-4", "behaviour")
+    contrast("movement", "reward, lr 1e-4", "control, lr 1e-4", "moved")
+    contrast("behaviour per unit of movement", "reward, lr 1e-4", "control, lr 1e-4", "behaviour",
+             per_move=True)
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
           "manifold": manifold,
           "representation": representation, "gradients": gradients,
-          "projection": projection}
+          "projection": projection, "movement": movement}
 
 
 def main():
