@@ -26,7 +26,7 @@ flowchart LR
 
 Neurofeedback changes recurrent weights, so it is a special case of arm B: H is an upper bound on
 what any neurofeedback signal can achieve on that network and that task. Behaviour is measured in
-d′, and 0.05 is the smallest difference this setup can resolve.
+d′, and 0.068 is the smallest difference this setup can resolve.
 
 ## What the measurements say
 
@@ -48,7 +48,7 @@ together and leaves the fraction a frozen read-out cannot reach unchanged, while
 requires a conjunction the current dynamics do not compute gives H = 1.58.
 
 At the small-headroom point, two of three neurofeedback signals put measurably more structure into
-the code (+0.029 and +0.019 crossnobis against an equal-budget control, both above the 0.0086
+the code (+0.029 and +0.019 crossnobis against an equal-budget control, both well above the 0.0015
 resolution) and none of them moved behaviour through the unchanged decoder. At the large-headroom
 point, where the signals were expected to separate favourably, all three ended up **below** plain
 supervised training at the same budget — joint minus control −0.300 (p = 0.024), reward minus
@@ -104,10 +104,10 @@ any average, so the tables can be rebuilt without retraining.
 | `degradation` | the input-noise ladder and the sub-optimality axis | `degradation` |
 | `patch_integration` | what averaging over the stimulus window is worth | `patch` |
 | `competence` | whether the representation forms before behaviour leaves the floor | — |
-| `nf` | one neurofeedback run (task × condition × network × repeat); conditions include the label-free `reward_aux` and the within-manifold `expand`, with knobs for the regression target, a weight anchor and decoder co-adaptation | `nf-c1`, `nf-context`, `lambda`, `labelfree` |
-| `manifold` | within- against outside-manifold perturbation of the frozen read-out, relearned by reward, with an incremental ladder | `manifold` |
+| `nf` | one neurofeedback run (task × condition × network × repeat); conditions include the label-free `reward_aux` and the within-manifold `expand` with its shuffled null, with knobs for the regression target, a weight anchor, decoder co-adaptation and a local learning rule in place of back-propagation | `nf-c1`, `nf-context`, `lambda`, `labelfree` |
+| `manifold` | within- against outside-manifold perturbation of the frozen read-out, relearned by reward, with a fixed incremental ladder or one that advances only while behaviour holds | `manifold` |
 | `representation` | the code at the end of a run, from its saved checkpoints | `representation` |
-| `gradients` | how the task and positional gradients sit relative to each other, and whether a single step moves the task loss as the projection predicts | `gradients` |
+| `gradients` | how the task and positional gradients sit relative to each other, and whether a single step of fixed length moves the task loss as the projection predicts | `gradients`, `projection` |
 
 Run the whole campaign with `scripts/pretrain.sh`, then `scripts/headroom.sh`,
 `scripts/instrument.sh`, `scripts/nf_c1.sh` and `scripts/nf_context.sh`. Together they are a few

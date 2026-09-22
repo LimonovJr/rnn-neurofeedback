@@ -28,12 +28,16 @@ run $PY -m experiments.nf --task c1 --cond joint --net 0 --rep 0 --updates 6 --e
     --eval-n 200 --panel --panel-trials 300 --out $OUT/nf_c1_joint_lam1_n200_net0_r0.csv
 run $PY -m experiments.nf --task context --cond reward --net 0 --rep 0 --updates 6 --eval-every 3 \
     --eval-n 200 --out $OUT/nf_context_reward_lam1_n200_net0_r0.csv
+run $PY -m experiments.nf --task c1 --cond reward_aux --rule local --net 0 --rep 0 --updates 6     --eval-every 3 --eval-n 200 --target cue --out $OUT/nf_c1_reward_aux_local_n200_net0_r0.csv
+run $PY -m experiments.nf --task c1 --cond expand --kappa 2 --shuffle --net 0 --rep 0 --updates 6     --eval-every 3 --eval-n 200 --out $OUT/nf_c1_expand_shuf_n200_net0_r0.csv
+run $PY -m experiments.manifold --net 0 --kind outside --angle 90 --auto --block 5 --updates 10     --eval-every 5 --out $OUT/manifold_outside_auto_net0_c0.csv
 
 run $PY -m experiments.representation --cond joint --net 0 --rep 0 --panel-trials 300 --out $OUT/repr_context_joint_net0_r0.csv
 run $PY -m experiments.gradients --cond joint --net 0 --rep 0 --out $OUT/grad_context_joint_net0_r0.csv
+run $PY -m experiments.gradients --cond joint --net 0 --rep 0 --step 0.003     --out $OUT/grad_step_context_joint_L0.003_net0_r0.csv
 
 echo
 echo "### aggregation over the smoke results"
-for table in headroom degradation patch nf-c1 nf-context representation gradients; do
+for table in headroom degradation patch nf-c1 nf-context manifold representation gradients projection; do
     $PY -m experiments.aggregate $table --results $OUT || true
 done
