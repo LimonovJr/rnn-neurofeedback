@@ -502,20 +502,17 @@ block23() {
 # 24. Adam, not credit? Adam scales each parameter's step by the running size of its gradient, so a
 #     noisy gradient moves the weights less whatever its direction, and "reward moves the weights
 #     less and gets more per unit moved" (blocks 13b, 15) could be the optimiser. The same contrast
-#     under plain gradient descent, two rates per signal (reward's gradient is larger and is clipped
-#     more often, so the rates are not shared), with the threshold sweep. What has to survive is
-#     the ratio of behaviour, and of policy shift, to weight movement.
+#     under plain gradient descent, with the threshold sweep and the policy shift. At lr 1e-2 both
+#     signals wreck the network within 30 updates (the control's gradient is clipped on 80% of them),
+#     and matching the per-update movement of the Adam runs puts both near 3e-4, so the two rates
+#     are 1e-4 and 3e-4 for both. What has to survive is the ratio of behaviour, and of policy
+#     shift, to weight movement; the clipped fraction is recorded, since a clipped step is a
+#     normalised one.
 block24() {
-    for net in $NETS; do
-        for lr in 1e-2 3e-2; do
-            run "nf_c1_control_sgd_lr${lr}_net$net" -m experiments.nf --task c1 --cond control \
-                --net $net --optimizer sgd --lr $lr --eval-n 10000 --criterion --retention
-        done
-        for lr in 3e-3 1e-2; do
-            run "nf_c1_reward_sgd_lr${lr}_net$net" -m experiments.nf --task c1 --cond reward \
-                --net $net --optimizer sgd --lr $lr --eval-n 10000 --criterion --retention
-        done
-    done
+    for lr in 1e-4 3e-4; do for cond in control reward; do for net in $NETS; do
+        run "nf_c1_${cond}_sgd_lr${lr}_net$net" -m experiments.nf --task c1 --cond $cond \
+            --net $net --optimizer sgd --lr $lr --eval-n 10000 --criterion --retention
+    done; done; done
     wait
 }
 
