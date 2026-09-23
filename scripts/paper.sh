@@ -334,6 +334,21 @@ block16() {
     wait
 }
 
+# 17. How much of the reward advantage is the release threshold. Six reward updates already lift
+#     the pretraining task from 1.24 to 1.98, which looks like a shift of the shared criterion, and
+#     re-fitting the read-out removes most of the advantage (block 8). At the start and at the end
+#     of each run the threshold the frozen decoder would do best with is found on one draw and
+#     scored on another; nothing is trained. If reward only moves the criterion, the two conditions
+#     meet once each has its best threshold; if it builds something the threshold cannot, reward
+#     stays ahead.
+block17() {
+    for cond in reward control; do for net in $NETS; do for rep in 0 1; do
+        run "nf_c1_${cond}_criterion_net${net}_r$rep" -m experiments.nf --task c1 --cond $cond \
+            --net $net --rep $rep --lr 1e-4 --eval-n 10000 --criterion
+    done; done; done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"

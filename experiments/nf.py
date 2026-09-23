@@ -66,6 +66,29 @@ def policy_shift(start, end, env_fn, n=256):
     return float(kl[valid].mean())
 
 
+OFFSETS = np.arange(-3.0, 3.01, 0.25)
+
+
+def best_criterion(model, env_fn, score, n_select, n_report):
+    """The best the frozen decoder can do by moving its release threshold alone: the offset on the
+    release logit that maximises d' on one draw, re-scored on an independent draw so the choice
+    does not flatter the number it is reported with. Nothing is trained, and the bias is put back."""
+    bias = model.b_out.detach().clone()
+
+    def at(offset, n):
+        with torch.no_grad():
+            model.b_out.copy_(bias)
+            model.b_out[1] += offset
+        return behaviour.measure(model, env_fn, n=n, score=score)
+
+    scores = [at(offset, n_select) for offset in OFFSETS]
+    best = float(OFFSETS[int(np.argmax(scores))])
+    d = at(best, n_report)
+    with torch.no_grad():
+        model.b_out.copy_(bias)
+    return best, round(d, 4)
+
+
 def retention(model, n):
     return {name: round(behaviour.measure(model, env, n=n), 4) for name, env in RETENTION.items()}
 
@@ -88,6 +111,12 @@ def run(a):
                                  outcome=outcome)
         start = dict(crossnobis_start=round(p["crossnobis"], 4), pr_start=round(p["pr"], 4))
         print(f"  start panel: crossnobis={p['crossnobis']:.4f} pr={p['pr']:.3f}", flush=True)
+
+    crit = {}
+    if a.criterion:
+        offset, d = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_start=offset, crit_d_start=d)
+        print(f"  best threshold at the start: offset {offset:+.2f}, d'={d:+.4f}", flush=True)
 
     kept_before = retention(model, a.eval_n) if a.retention else {}
     if kept_before:
@@ -125,6 +154,12 @@ def run(a):
         assert d_out == 0.0, f"the decision read-out moved: {d_out:.3e}"
     assert d_aux == 0.0, f"the position head moved: {d_aux:.3e}"
 
+    if a.criterion:
+        model.eval()
+        offset, d = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_end=offset, crit_d_end=d)
+        print(f"  best threshold at the end: offset {offset:+.2f}, d'={d:+.4f}", flush=True)
+
     kept_after = {}
     if a.retention:
         model.eval()
@@ -157,11 +192,12 @@ def run(a):
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_rec=f"{d_rec:.4f}", dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
-                           **start, **end, **kept_after),
+                           **start, **end, **kept_after, **crit),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
+                "crit_offset_start", "crit_d_start", "crit_offset_end", "crit_d_end",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
@@ -198,6 +234,11 @@ def main():
                    help="scale on the recurrent noise while the local rule learns")
     p.add_argument("--explore-k", type=int, default=0,
                    help="confine the local rule's exploration to the top-k activity directions")
+    p.add_argument("--criterion", action="store_true",
+                   help="also find the release threshold that is best for the frozen decoder, at "
+                        "the start and at the end, and score it on an independent draw")
+    p.add_argument("--criterion-n", type=int, default=2000,
+                   help="trials per offset when choosing the threshold")
     p.add_argument("--retention", action="store_true",
                    help="also score the pretraining task and the patch cell before and after the "
                         "run, and the policy shift on the trained task")
@@ -227,6 +268,7 @@ def main():
            + (f"_anchor{a.anchor:g}" if a.anchor else "")
            + (f"_k{a.kappa:g}" if a.cond == "expand" else "") + ("_shuf" if a.shuffle else "")
            + (f"_npk{a.explore_k}" if a.explore_k else "") + ("_ret" if a.retention else "")
+           + ("_crit" if a.criterion else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))
