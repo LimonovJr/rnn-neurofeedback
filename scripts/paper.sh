@@ -422,8 +422,35 @@ block20b() {
 block20c() {
     for net in $NEW_NETS; do for rep in 0 1; do for cond in control reward; do
         run "nf_context_${cond}_net${net}_r$rep" -m experiments.nf --task context --cond $cond \
-            --net $net --rep $rep
+            --net $net --rep $rep --criterion
     done; done; done
+    wait
+}
+
+# 21. The threshold, everywhere a behavioural contrast is claimed. On c1 the whole reward advantage
+#     turned out to be the release threshold of the frozen decoder: with each condition at its
+#     best threshold, reward - control is -0.006 (p = 0.84), and both raise discriminability by the
+#     same amount. The same check for the representational targets on c1 (21a) and for the
+#     context contrast the regime axis rests on (21b), networks 0-4.
+block21a() {
+    for net in $NETS; do
+        run "nf_c1_expand_k2_slow_crit_net$net" -m experiments.nf --task c1 --cond expand \
+            --net $net --lr 7.5e-5 --kappa 2 --eval-n 10000 --panel --all-trials --criterion
+        run "nf_c1_expand_shuf_fast_crit_net$net" -m experiments.nf --task c1 --cond expand \
+            --net $net --lr 1.3e-4 --kappa 1 --shuffle --eval-n 10000 --panel --all-trials --criterion
+        run "nf_c1_expand_k1_crit_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 1e-4 --kappa 1 --eval-n 10000 --panel --all-trials --criterion
+        run "nf_c1_joint_crit_net$net" -m experiments.nf --task c1 --cond joint --net $net \
+            --eval-n 10000 --criterion
+    done
+    wait
+}
+
+block21b() {
+    for net in $NETS; do for cond in control reward joint; do
+        run "nf_context_${cond}_crit_net$net" -m experiments.nf --task context --cond $cond \
+            --net $net --target cue --criterion
+    done; done
     wait
 }
 
