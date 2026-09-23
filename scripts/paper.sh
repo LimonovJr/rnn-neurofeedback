@@ -349,6 +349,21 @@ block17() {
     wait
 }
 
+# 18. Speed or level. Pooled over every repeat, reward is flat from about 300 updates (+0.02 per
+#     thousand over the second half) while the control is still climbing at 1200 (+0.11 per
+#     thousand), so the 1200-update contrast cannot say whether reward reaches a higher level or
+#     only reaches it sooner. The same contrast at 4000 updates, with the control also at the rate
+#     it does best with (3e-4). Prediction registered before the runs: the gap narrows; whether it
+#     closes is the question.
+block18() {
+    for net in $NETS; do
+        run "nf_c1_reward_u4000_net$net" -m experiments.nf --task c1 --cond reward --net $net             --lr 1e-4 --updates 4000 --eval-every 250 --eval-n 10000
+        run "nf_c1_control_u4000_lr1e-4_net$net" -m experiments.nf --task c1 --cond control             --net $net --lr 1e-4 --updates 4000 --eval-every 250 --eval-n 10000
+        run "nf_c1_control_u4000_lr3e-4_net$net" -m experiments.nf --task c1 --cond control             --net $net --lr 3e-4 --updates 4000 --eval-every 250 --eval-n 10000
+    done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"
