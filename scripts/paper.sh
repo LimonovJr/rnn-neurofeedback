@@ -454,6 +454,19 @@ block21b() {
     wait
 }
 
+# 21c. The threshold under internal noise. Block 19 found reward far above the supervised control
+#      at both noise levels (+0.88 at x2, +1.02 at x3), several times the intact c1 advantage that
+#      block 17 traced entirely to the release threshold. Before that gap means anything it gets
+#      the same check.
+block21c() {
+    for scale in 2 3; do for cond in reward control; do for net in $NETS; do
+        run "nf_c1_${cond}_crit_rn${scale}_net$net" -m experiments.nf --task c1 --cond $cond \
+            --net $net --rec-noise-scale $scale --updates 2000 --eval-every 200 --eval-n 10000 \
+            --criterion
+    done; done; done
+    wait
+}
+
 for b in "$@"; do
     echo "=== block $b started $(date)"
     "block$b"
