@@ -467,8 +467,14 @@ block21c() {
     wait
 }
 
-for b in "$@"; do
-    echo "=== block $b started $(date)"
-    "block$b"
-    echo "=== block $b finished $(date)"
-done
+main() {
+    for b in "$@"; do
+        echo "=== block $b started $(date)"
+        "block$b"
+        echo "=== block $b finished $(date)"
+    done
+}
+
+# one line, so bash has read the whole file before anything runs: a launch in progress keeps
+# doing what it was started with even if blocks are added to this file meanwhile
+main "$@"; exit
