@@ -159,15 +159,18 @@ def run(a):
 
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] {a.updates} updates, lr={a.lr}, "
           f"lam={a.lam:g}, target={a.target}, anchor={a.anchor:g}, rule={a.rule}", flush=True)
+    clipped = ""
     if a.rule == "local":
         assert a.cond in ("reward", "reward_aux"), "the local rule learns from reward only"
         local.train(model, env_fn, a.updates, lr=a.lr, explore=a.explore, explore_k=a.explore_k,
                     aux_weight=a.lam if a.cond == "reward_aux" else 0.0,
                     eval_every=a.eval_every, hook=hook, xy_from=a.target)
     else:
-        signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
+        history = signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
-                      xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle)
+                      xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle,
+                      optimizer=a.optimizer)
+        clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
     # from one that asked for nothing
@@ -214,14 +217,15 @@ def run(a):
                            shuffle=int(a.shuffle),
                            adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}", explore_k=a.explore_k,
-                           rec_noise_scale=f"{a.rec_noise_scale:g}",
+                           rec_noise_scale=f"{a.rec_noise_scale:g}", optimizer=a.optimizer,
+                           clipped=clipped,
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_rec=f"{d_rec:.4f}", dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
                            curve_upd=runs.joined(upds), curve_dprime=runs.joined(curve),
                            **start, **end, **kept_after, **crit),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
-                "explore_k", "rec_noise_scale", "all_trials", "d0",
+                "explore_k", "rec_noise_scale", "optimizer", "clipped", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
                 "crit_offset_start", "crit_d_start", "crit_edge_start", "auc_start",
                 "crit_offset_end", "crit_d_end", "crit_edge_end", "auc_end",
@@ -261,6 +265,9 @@ def main():
                    help="scale on the recurrent noise while the local rule learns")
     p.add_argument("--explore-k", type=int, default=0,
                    help="confine the local rule's exploration to the top-k activity directions")
+    p.add_argument("--optimizer", choices=["adam", "sgd"], default="adam",
+                   help="sgd removes Adam's per-parameter normalisation, which shrinks the steps "
+                        "of a noisy gradient whatever its size")
     p.add_argument("--rec-noise-scale", type=float, default=1.0,
                    help="multiply the recurrent noise and keep it on at evaluation")
     p.add_argument("--criterion", action="store_true",
@@ -299,6 +306,7 @@ def main():
            + (f"_npk{a.explore_k}" if a.explore_k else "") + ("_ret" if a.retention else "")
            + ("_crit" if a.criterion else "")
            + (f"_rn{a.rec_noise_scale:g}" if a.rec_noise_scale != 1.0 else "")
+           + ("_sgd" if a.optimizer == "sgd" else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

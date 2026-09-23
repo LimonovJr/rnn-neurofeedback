@@ -35,6 +35,7 @@ from src.training import cross_entropy
 LR = {"control": 3e-4, "position": 3e-4, "joint": 3e-4, "reward": 1e-4, "reward_aux": 1e-4,
       "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4}
 FA_PENALTY = 0.4                                 # the weight the ceiling arms train with
+OPTIMISERS = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}
 BATCH = 48
 WINDOW_MS = (-300, 0)
 TASK_WEIGHT = 0.2                                # position's task term, a fifth of the control's
@@ -42,13 +43,15 @@ ENTROPY = 0.05
 
 
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
-          hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False):
+          hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
+          optimizer="adam"):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
     lr = LR[cond] if lr is None else lr
     if cond == "reward":
-        return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor)
+        return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor,
+                         optimizer=optimizer)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
@@ -66,7 +69,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
         step = task_step(pos_weight, TASK_WEIGHT if cond == "position" else 1.0)
     clip = 5.0 if cond == "reward_aux" else 10.0
     return loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, device,
-                xy_from=xy_from, anchor=anchor, grad_clip=clip)
+                xy_from=xy_from, anchor=anchor, grad_clip=clip, optimizer=optimizer)
 
 
 def positional_error(model, h, xy_true, delay_mask):
@@ -185,13 +188,13 @@ def gated_step(lam):
 
 
 def loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, device,
-         xy_from="target", anchor=0.0, grad_clip=10.0, log_every=50):
+         xy_from="target", anchor=0.0, grad_clip=10.0, log_every=50, optimizer="adam"):
     frozen = [model.W_aux, model.b_aux] + ([model.W_out, model.b_out] if freeze_decision else [])
     was = [p.requires_grad for p in frozen]
     for p in frozen:
         p.requires_grad_(False)
     params = [p for p in model.parameters() if p.requires_grad]
-    opt = torch.optim.Adam(params, lr=lr)
+    opt = OPTIMISERS[optimizer](params, lr=lr)
     w_rec0 = model.W_rec.detach().clone()
 
     history = defaultdict(list)
@@ -206,7 +209,9 @@ def loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, de
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, grad_clip)
+        # under plain gradient descent a clipped step is a normalised one, so how often the clip
+        # acts is part of what a run did
+        history["clipped"].append(float(torch.nn.utils.clip_grad_norm_(params, grad_clip) > grad_clip))
         opt.step()
 
         for k, v in logs.items():
@@ -259,11 +264,11 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY):
 
 
 def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, grad_clip=5.0,
-              log_every=50):
+              log_every=50, optimizer="adam"):
     for p in (model.W_aux, model.b_aux, model.W_out, model.b_out):
         p.requires_grad_(False)
     params = [p for p in model.parameters() if p.requires_grad]
-    opt = torch.optim.Adam(params, lr=lr)
+    opt = OPTIMISERS[optimizer](params, lr=lr)
     w_rec0 = model.W_rec.detach().clone()
 
     history = defaultdict(list)
@@ -278,7 +283,9 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, grad_clip)
+        # under plain gradient descent a clipped step is a normalised one, so how often the clip
+        # acts is part of what a run did
+        history["clipped"].append(float(torch.nn.utils.clip_grad_norm_(params, grad_clip) > grad_clip))
         opt.step()
 
         for k, v in stats.items():

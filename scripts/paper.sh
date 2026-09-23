@@ -499,6 +499,26 @@ block23() {
     wait
 }
 
+# 24. Adam, not credit? Adam scales each parameter's step by the running size of its gradient, so a
+#     noisy gradient moves the weights less whatever its direction, and "reward moves the weights
+#     less and gets more per unit moved" (blocks 13b, 15) could be the optimiser. The same contrast
+#     under plain gradient descent, two rates per signal (reward's gradient is larger and is clipped
+#     more often, so the rates are not shared), with the threshold sweep. What has to survive is
+#     the ratio of behaviour, and of policy shift, to weight movement.
+block24() {
+    for net in $NETS; do
+        for lr in 1e-2 3e-2; do
+            run "nf_c1_control_sgd_lr${lr}_net$net" -m experiments.nf --task c1 --cond control \
+                --net $net --optimizer sgd --lr $lr --eval-n 10000 --criterion --retention
+        done
+        for lr in 3e-3 1e-2; do
+            run "nf_c1_reward_sgd_lr${lr}_net$net" -m experiments.nf --task c1 --cond reward \
+                --net $net --optimizer sgd --lr $lr --eval-n 10000 --criterion --retention
+        done
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
