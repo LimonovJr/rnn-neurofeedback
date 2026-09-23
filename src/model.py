@@ -121,9 +121,12 @@ class BioLeakyRNNTopo(nn.Module):
             sensory = drive_cue + drive_stim
             drive_cue, drive_stim = sensory + self.sigma_in * torch.randn_like(sensory), 0.0
 
-        preact = drive_fix + drive_cue + drive_stim + F.linear(h_t, self.W_rec_eff()) + self.b_h
+        recurrent = F.linear(h_t, self.W_rec_eff())
+        preact = drive_fix + drive_cue + drive_stim + recurrent + self.b_h
         if self.preact_log is not None:
-            self.preact_log.append(preact)
+            # the score function holds the visited state fixed: a step is credited only for its own
+            # dependence on the weights, not for the path that led to the state
+            self.preact_log.append(preact - recurrent + F.linear(h_t.detach(), self.W_rec_eff()))
         if noisy and self.rec_noise:
             if self.noise_basis is None:
                 xi = self.sigma_eff * torch.randn_like(preact)

@@ -133,10 +133,12 @@ def operant_step(shuffle=False):
     """Reinforcement on the neural state rather than on an action. The network's own recurrent
     noise is the exploration; the reward of a trial is minus the delay-window error of the frozen
     position decoder on the states the network actually visited; the score function of the noise
-    in the delay window carries the credit back through time. It is REINFORCE with the state as
-    the action and back-propagation as the learner, which separates what a decoder-computed scalar
-    can teach from what a noise-based local rule can estimate. `shuffle` scores each trial against
-    another trial's position, the null that asks for nothing."""
+    in the delay window carries the credit. With the visited states held fixed, as the score
+    function requires, no credit flows back through time: the estimator is node perturbation's,
+    here on every parameter and with the optimiser the other conditions use. That is the whole of
+    what a scalar computed from the state can teach without differentiating the decoder, which
+    would make it the supervised condition. `shuffle` scores each trial against another trial's
+    position, the null that asks for nothing."""
     def step(model, batch):
         x, _, _, _, xy_true, delay_mask, _ = batch
         model.noise_log, model.preact_log = [], []
