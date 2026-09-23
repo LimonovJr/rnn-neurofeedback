@@ -584,12 +584,39 @@ def retention(args):
             print(f"  {cond:<8}{key:<18}{mean:>+8.3f} +- {sem:.3f}  p = {p:.4f}")
 
 
+def share(args):
+    """What fraction of the measured headroom each c1 signal realises. The ceilings are trained
+    with the read-out's bias, so they sit at their best threshold; the runs are read both at the
+    frozen decoder's own threshold and at the best one, so numerator and denominator can be put
+    on the same footing."""
+    heads = runs.read(f"{args.results}/headroom_c1_*_net*.csv")
+    arms = {a: by_net([r for r in heads if r["arm"] == a], lambda r: float(r["C_mean"]))
+            for a in ("A", "B")}
+    c_a = {n: st.median(v) for n, v in arms["A"].items()}
+    c_b = {n: st.median(v) for n, v in arms["B"].items()}
+    print(f"C_A {np.mean(list(c_a.values())):.3f}   C_B {np.mean(list(c_b.values())):.3f}")
+    print(f"{'condition':<10}{'n':>3}{'own threshold':>15}{'best threshold':>16}{'best - C_B':>12}{'p':>8}")
+    for cond, pattern in (("reward", "nf_c1_reward_lam1_n10000_crit_net*_r[01].csv"),
+                          ("control", "nf_c1_control_lam1_n10000_crit_lr0.0001_net*_r[01].csv")):
+        rows = runs.read(f"{args.results}/{pattern}")
+        own = by_net(rows, lambda r: float(np.mean(curve(r)[1][-6:])))
+        best = by_net(rows, lambda r: float(r["crit_d_end"]))
+        nets = sorted(set(own) & set(c_a) & set(c_b))
+        if not nets:
+            continue
+        frac = lambda d, n: (np.mean(d[n]) - c_a[n]) / (c_b[n] - c_a[n])
+        mean, sem, p = stats.paired([np.mean(best[n]) for n in nets], [c_b[n] for n in nets])
+        print(f"{cond:<10}{len(nets):>3}{np.mean([frac(own, n) for n in nets]):>+15.2f}"
+              f"{np.mean([frac(best, n) for n in nets]):>+16.2f}{mean:>+12.3f}{p:>8.3f}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
           "manifold": manifold,
           "representation": representation, "gradients": gradients,
-          "projection": projection, "movement": movement, "retention": retention}
+          "projection": projection, "movement": movement, "retention": retention,
+          "share": share}
 
 
 def main():
