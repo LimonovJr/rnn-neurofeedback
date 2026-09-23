@@ -467,6 +467,38 @@ block21c() {
     wait
 }
 
+# 22. The reward advantage without a threshold, and a supervised learner that is not
+#     miscalibrated. Pretraining used plain cross-entropy and so does the control; the ceiling arms
+#     add a false-alarm penalty (0.4), and the control is the one learner here left releasing too
+#     readily. Reward, the control and the control with that penalty, all at lr 1e-4, with the
+#     best threshold and the area under the ROC hull at the start and the end. A third repeat
+#     (rep 2), so the names do not collide with block 17. Prediction: the penalised control matches
+#     reward at the decoder's own threshold, and all three match in area.
+block22() {
+    for cond in reward control control_fa; do for net in $NETS; do
+        run "nf_c1_${cond}_auc_net$net" -m experiments.nf --task c1 --cond $cond --net $net \
+            --rep 2 --lr 1e-4 --eval-n 10000 --criterion
+    done; done
+    wait
+}
+
+# 23. Neurofeedback proper, with a perfect learner. The reward is a scalar the frozen position
+#     decoder computes from the delay state; the network learns it by reinforcement on its own
+#     recurrent noise, with back-propagation carrying the credit. Nothing is supervised and there is
+#     no task term. The node-perturbation rule failed to move the code, and this separates the two
+#     reasons it could have: if the code moves here, the local rule's credit assignment was the
+#     problem; if it does not, a decoder-computed scalar cannot steer the code at this scale. The null
+#     scores each trial against another trial's position. Two learning rates.
+block23() {
+    for lr in 1e-4 3e-4; do for net in $NETS; do
+        run "nf_c1_operant_lr${lr}_net$net" -m experiments.nf --task c1 --cond operant \
+            --net $net --lr $lr --target cue --eval-n 10000 --panel --all-trials
+        run "nf_c1_operant_shuf_lr${lr}_net$net" -m experiments.nf --task c1 --cond operant \
+            --shuffle --net $net --lr $lr --target cue --eval-n 10000 --panel --all-trials
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

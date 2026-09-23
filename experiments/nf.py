@@ -27,7 +27,8 @@ from src.model import CKPT, load, save
 from src.training import TrainConfig, train_supervised
 
 K = 6                              # checkpoints averaged into the reported level
-CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "gated"]
+CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "gated", "control_fa",
+         "operant"]
 # what the network could already do before the run, scored through the same decision read-out
 RETENTION = {"pretrain": tasks.stage(2), "patch": tasks.patch()}
 DEFAULTS = {
@@ -81,18 +82,28 @@ def best_criterion(model, env_fn, score, n_select, n_report):
         with torch.no_grad():
             model.b_out.copy_(bias)
             model.b_out[1] += offset
-        return behaviour.measure(model, env_fn, n=n, score=score)
+        return behaviour.measure_rates(model, env_fn, n=n, score=score)
 
     coarse = [at(offset, n_select) for offset in COARSE]
-    centre = float(COARSE[int(np.argmax(coarse))])
+    centre = float(COARSE[int(np.argmax([c[0] for c in coarse]))])
     edge = int(centre in (COARSE[0], COARSE[-1]))
     grid = centre + FINE
-    fine = [at(offset, n_select) for offset in grid]
+    fine = [at(offset, n_select)[0] for offset in grid]
     best = float(grid[int(np.argmax(fine))])
-    d = at(best, n_report)
+    d = at(best, n_report)[0]
     with torch.no_grad():
         model.b_out.copy_(bias)
-    return best, round(d, 4), edge
+    # the ROC traced by the same sweep: every threshold at once, none of them chosen. Releasing too
+    # early is an abort, not a hit, so hits fall again at the liberal end and the points are not a
+    # curve; the area is taken under their upper convex hull, the best any threshold mixture reaches
+    hull = []
+    for point in sorted([(0.0, 0.0), (1.0, 1.0)] + [(fa, hit) for _, hit, fa in coarse]):
+        while len(hull) >= 2 and ((hull[-1][0] - hull[-2][0]) * (point[1] - hull[-2][1])
+                                  - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-2][0])) >= 0:
+            hull.pop()
+        hull.append(point)
+    auc = sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(hull, hull[1:]))
+    return best, round(d, 4), edge, round(auc, 4)
 
 
 def retention(model, n):
@@ -125,8 +136,9 @@ def run(a):
 
     crit = {}
     if a.criterion:
-        offset, d, edge = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_start=offset, crit_d_start=d, crit_edge_start=edge)
+        offset, d, edge, auc = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_start=offset, crit_d_start=d, crit_edge_start=edge,
+                    auc_start=auc)
         print(f"  best threshold at the start: offset {offset:+.3f}, d'={d:+.4f}"
               + (" (on the edge of the grid)" if edge else ""), flush=True)
 
@@ -168,8 +180,8 @@ def run(a):
 
     if a.criterion:
         model.eval()
-        offset, d, edge = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_end=offset, crit_d_end=d, crit_edge_end=edge)
+        offset, d, edge, auc = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_end=offset, crit_d_end=d, crit_edge_end=edge, auc_end=auc)
         print(f"  best threshold at the end: offset {offset:+.3f}, d'={d:+.4f}"
               + (" (on the edge of the grid)" if edge else ""), flush=True)
 
@@ -211,8 +223,8 @@ def run(a):
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
-                "crit_offset_start", "crit_d_start", "crit_edge_start",
-                "crit_offset_end", "crit_d_end", "crit_edge_end",
+                "crit_offset_start", "crit_d_start", "crit_edge_start", "auc_start",
+                "crit_offset_end", "crit_d_end", "crit_edge_end", "auc_end",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])

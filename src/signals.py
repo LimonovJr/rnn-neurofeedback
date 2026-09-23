@@ -14,6 +14,11 @@ builds has to reach behaviour through a decoder that did not change.
                 kappa times further apart -- a within-manifold target
     gated       joint, with the positional term switched on only on the updates where its
                 gradient points the same way as the task's (Du et al. 2018)
+    control_fa  the control with the false-alarm penalty the ceiling arms train with, so the
+                supervised learner is not left releasing too readily
+    operant     neurofeedback proper: a scalar reward computed by the frozen position decoder from
+                the delay state, learned by reinforcement on the network's own noise, with no task
+                signal and no gradient through the decoder
 
 `anchor` adds a pull toward the starting recurrent weights, which is how the learning regime is
 moved from rich toward lazy without touching the learning rate.
@@ -28,7 +33,8 @@ from src import trials
 from src.training import cross_entropy
 
 LR = {"control": 3e-4, "position": 3e-4, "joint": 3e-4, "reward": 1e-4, "reward_aux": 1e-4,
-      "expand": 3e-4, "gated": 3e-4}
+      "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4}
+FA_PENALTY = 0.4                                 # the weight the ceiling arms train with
 BATCH = 48
 WINDOW_MS = (-300, 0)
 TASK_WEIGHT = 0.2                                # position's task term, a fifth of the control's
@@ -49,6 +55,10 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
         step = expand_step(kappa, shuffle)
     elif cond == "gated":
         step = gated_step(lam)
+    elif cond == "control_fa":
+        step = control_fa_step()
+    elif cond == "operant":
+        step = operant_step(shuffle)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -106,6 +116,45 @@ def expand_step(kappa, shuffle=False):
             xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
         err = positional_error(model, h, kappa * xy_true, delay_mask)
         return err, {"expand_err": err.detach()}
+    return step
+
+
+def control_fa_step():
+    def step(model, batch):
+        x, y, mask, fa, _, _, _ = batch
+        logits = model(x, return_hidden=True)[0]
+        ce = cross_entropy(logits, y, mask)
+        fa_pen = (torch.softmax(logits, -1)[..., 1] * fa).sum() / fa.sum().clamp_min(1)
+        return ce + FA_PENALTY * fa_pen, {"ce": ce.detach(), "fa_pen": fa_pen.detach()}
+    return step
+
+
+def operant_step(shuffle=False):
+    """Reinforcement on the neural state rather than on an action. The network's own recurrent
+    noise is the exploration; the reward of a trial is minus the delay-window error of the frozen
+    position decoder on the states the network actually visited; the score function of the noise
+    in the delay window carries the credit back through time. It is REINFORCE with the state as
+    the action and back-propagation as the learner, which separates what a decoder-computed scalar
+    can teach from what a noise-based local rule can estimate. `shuffle` scores each trial against
+    another trial's position, the null that asks for nothing."""
+    def step(model, batch):
+        x, _, _, _, xy_true, delay_mask, _ = batch
+        model.noise_log, model.preact_log = [], []
+        _, _, h = model(x, return_hidden=True)
+        xi = torch.stack(model.noise_log, 1).detach()
+        mean = torch.stack(model.preact_log, 1)
+        model.noise_log = model.preact_log = None
+        if shuffle:
+            xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
+        with torch.no_grad():
+            err = ((model.decode_xy(h) - xy_true) ** 2).sum(-1)
+            pos_err = (err * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
+            advantage = -(pos_err - pos_err.mean()) / (pos_err.std() + 1e-6)
+        # d/dtheta of log N(mean + xi | mean, sigma^2) is (xi / sigma^2) d mean/dtheta
+        score = ((xi / model.sigma_eff ** 2) * mean).sum(-1)
+        score = (score * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
+        loss = -(advantage * score).mean()
+        return loss, {"pos_err": pos_err.mean()}
     return step
 
 
