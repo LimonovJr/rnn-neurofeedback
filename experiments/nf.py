@@ -66,13 +66,15 @@ def policy_shift(start, end, env_fn, n=256):
     return float(kl[valid].mean())
 
 
-OFFSETS = np.arange(-3.0, 3.01, 0.25)
+COARSE = np.arange(-8.0, 4.01, 0.5)
+FINE = np.arange(-0.5, 0.51, 0.125)
 
 
 def best_criterion(model, env_fn, score, n_select, n_report):
     """The best the frozen decoder can do by moving its release threshold alone: the offset on the
-    release logit that maximises d' on one draw, re-scored on an independent draw so the choice
-    does not flatter the number it is reported with. Nothing is trained, and the bias is put back."""
+    release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw
+    so the choice does not flatter the number it is reported with. Nothing is trained, and the bias
+    is put back. An optimum on the edge of the coarse grid is reported as such."""
     bias = model.b_out.detach().clone()
 
     def at(offset, n):
@@ -81,12 +83,16 @@ def best_criterion(model, env_fn, score, n_select, n_report):
             model.b_out[1] += offset
         return behaviour.measure(model, env_fn, n=n, score=score)
 
-    scores = [at(offset, n_select) for offset in OFFSETS]
-    best = float(OFFSETS[int(np.argmax(scores))])
+    coarse = [at(offset, n_select) for offset in COARSE]
+    centre = float(COARSE[int(np.argmax(coarse))])
+    edge = int(centre in (COARSE[0], COARSE[-1]))
+    grid = centre + FINE
+    fine = [at(offset, n_select) for offset in grid]
+    best = float(grid[int(np.argmax(fine))])
     d = at(best, n_report)
     with torch.no_grad():
         model.b_out.copy_(bias)
-    return best, round(d, 4)
+    return best, round(d, 4), edge
 
 
 def retention(model, n):
@@ -114,9 +120,10 @@ def run(a):
 
     crit = {}
     if a.criterion:
-        offset, d = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_start=offset, crit_d_start=d)
-        print(f"  best threshold at the start: offset {offset:+.2f}, d'={d:+.4f}", flush=True)
+        offset, d, edge = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_start=offset, crit_d_start=d, crit_edge_start=edge)
+        print(f"  best threshold at the start: offset {offset:+.3f}, d'={d:+.4f}"
+              + (" (on the edge of the grid)" if edge else ""), flush=True)
 
     kept_before = retention(model, a.eval_n) if a.retention else {}
     if kept_before:
@@ -156,9 +163,10 @@ def run(a):
 
     if a.criterion:
         model.eval()
-        offset, d = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_end=offset, crit_d_end=d)
-        print(f"  best threshold at the end: offset {offset:+.2f}, d'={d:+.4f}", flush=True)
+        offset, d, edge = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_end=offset, crit_d_end=d, crit_edge_end=edge)
+        print(f"  best threshold at the end: offset {offset:+.3f}, d'={d:+.4f}"
+              + (" (on the edge of the grid)" if edge else ""), flush=True)
 
     kept_after = {}
     if a.retention:
@@ -197,7 +205,8 @@ def run(a):
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
-                "crit_offset_start", "crit_d_start", "crit_offset_end", "crit_d_end",
+                "crit_offset_start", "crit_d_start", "crit_edge_start",
+                "crit_offset_end", "crit_d_end", "crit_edge_end",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
