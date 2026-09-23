@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 source scripts/pool.sh
 
 NETS="0 1 2 3 4"
+NEW_NETS="5 6 7 8 9"          # trained after the campaign, for the confirmatory repeat
 
 # 1. The most promising positive lead, measured properly: reward against control on c1 at the
 #    10k evaluation, two repeats. The published +0.19 sat at p = 0.24 on 1k evaluations.
@@ -361,6 +362,68 @@ block18() {
         run "nf_c1_control_u4000_lr1e-4_net$net" -m experiments.nf --task c1 --cond control             --net $net --lr 1e-4 --updates 4000 --eval-every 250 --eval-n 10000
         run "nf_c1_control_u4000_lr3e-4_net$net" -m experiments.nf --task c1 --cond control             --net $net --lr 3e-4 --updates 4000 --eval-every 250 --eval-n 10000
     done
+    wait
+}
+
+# 19. Internal noise: the one regime the supervisor proposed that was never run, because the
+#     recurrent-noise ladder was a no-op. A pre-test without training found that as the noise grows
+#     behaviour falls to the floor (d' 0.96 at x1, 0.21 at x2, -0.26 at x3) and the positional
+#     gradient lines up with the task gradient (cosine +0.06, +0.18, +0.22). At the floor the
+#     reward learner has no gradient; the positional term has one and it points the right way.
+#     Primary: reward plus positional term against reward alone, label-free. Secondary: joint
+#     against the supervised control. Prediction: reward_aux > reward at both levels; joint >= control.
+block19() {
+    for scale in 2 3; do for net in $NETS; do
+        run "nf_c1_reward_rn${scale}_net$net" -m experiments.nf --task c1 --cond reward \
+            --net $net --rec-noise-scale $scale --updates 2000 --eval-every 200 --eval-n 10000
+        run "nf_c1_reward_aux_rn${scale}_net$net" -m experiments.nf --task c1 --cond reward_aux \
+            --net $net --rec-noise-scale $scale --lam 20 --target cue --updates 2000 \
+            --eval-every 200 --eval-n 10000
+        run "nf_c1_control_rn${scale}_net$net" -m experiments.nf --task c1 --cond control \
+            --net $net --rec-noise-scale $scale --updates 2000 --eval-every 200 --eval-n 10000
+        run "nf_c1_joint_rn${scale}_net$net" -m experiments.nf --task c1 --cond joint \
+            --net $net --rec-noise-scale $scale --target cue --updates 2000 --eval-every 200 \
+            --eval-n 10000
+    done; done
+    wait
+}
+
+# 20. The confirmatory repeat of the four primary contrasts on networks 5-9, with the contrasts,
+#     the direction of each and the Holm correction fixed before any of these runs. 20a: the two
+#     c1 contrasts; 20b: the ladder; 20c: the context contrast.
+block20a() {
+    for net in $NEW_NETS; do for rep in 0 1; do
+        run "nf_c1_reward_10k_net${net}_r$rep" -m experiments.nf --task c1 --cond reward \
+            --net $net --rep $rep --eval-n 10000
+        run "nf_c1_control_lr1e-4_net${net}_r$rep" -m experiments.nf --task c1 --cond control \
+            --net $net --rep $rep --lr 1e-4 --eval-n 10000
+    done; done
+    for net in $NEW_NETS; do
+        run "nf_c1_expand_k2_slow_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 7.5e-5 --kappa 2 --eval-n 10000 --panel --all-trials
+        run "nf_c1_expand_shuf_fast_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 1.3e-4 --kappa 1 --shuffle --eval-n 10000 --panel --all-trials
+        run "nf_c1_expand_k1_net$net" -m experiments.nf --task c1 --cond expand --net $net \
+            --lr 1e-4 --kappa 1 --eval-n 10000 --panel --all-trials
+    done
+    wait
+}
+
+block20b() {
+    for net in $NEW_NETS; do for c in 0 1 2; do
+        run "manifold_outside_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
+            --angle 90 --candidate $c
+        run "manifold_auto_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
+            --angle 90 --candidate $c --auto --updates 6000
+    done; done
+    wait
+}
+
+block20c() {
+    for net in $NEW_NETS; do for rep in 0 1; do for cond in control reward; do
+        run "nf_context_${cond}_net${net}_r$rep" -m experiments.nf --task context --cond $cond \
+            --net $net --rep $rep
+    done; done; done
     wait
 }
 
