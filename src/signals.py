@@ -18,7 +18,11 @@ builds has to reach behaviour through a decoder that did not change.
                 supervised learner is not left releasing too readily
     operant     neurofeedback proper: a scalar reward computed by the frozen position decoder from
                 the delay state, learned by reinforcement on the network's own noise, with no task
-                signal and no gradient through the decoder
+                signal and no gradient through the decoder; with the task's outcome as the reward
+                instead, the same learner's positive control
+    axis        decoded neurofeedback along a fixed direction at a chosen angle to the decision
+                axis: a frozen one-dimensional classifier on the state, separating response steps
+                from false-alarm steps, trained through, with no task term
 
 `anchor` adds a pull toward the starting recurrent weights, which is how the learning regime is
 moved from rich toward lazy without touching the learning rate.
@@ -28,12 +32,13 @@ from collections import defaultdict
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
-from src import trials
+from src import local, trials
 from src.training import cross_entropy
 
 LR = {"control": 3e-4, "position": 3e-4, "joint": 3e-4, "reward": 1e-4, "reward_aux": 1e-4,
-      "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4}
+      "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4, "axis": 3e-4}
 FA_PENALTY = 0.4                                 # the weight the ceiling arms train with
 OPTIMISERS = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}
 BATCH = 48
@@ -44,14 +49,14 @@ ENTROPY = 0.05
 
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
           hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
-          optimizer="adam"):
+          optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
     lr = LR[cond] if lr is None else lr
     if cond == "reward":
         return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor,
-                         optimizer=optimizer)
+                         optimizer=optimizer, fa_cost=fa_cost)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
@@ -59,9 +64,11 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
     elif cond == "gated":
         step = gated_step(lam)
     elif cond == "control_fa":
-        step = control_fa_step()
+        step = control_fa_step(FA_PENALTY if fa_penalty is None else fa_penalty)
     elif cond == "operant":
-        step = operant_step(shuffle)
+        step = operant_step(shuffle, operant_reward)
+    elif cond == "axis":
+        step = axis_step(axis)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -122,17 +129,31 @@ def expand_step(kappa, shuffle=False):
     return step
 
 
-def control_fa_step():
+def control_fa_step(weight):
     def step(model, batch):
         x, y, mask, fa, _, _, _ = batch
         logits = model(x, return_hidden=True)[0]
         ce = cross_entropy(logits, y, mask)
         fa_pen = (torch.softmax(logits, -1)[..., 1] * fa).sum() / fa.sum().clamp_min(1)
-        return ce + FA_PENALTY * fa_pen, {"ce": ce.detach(), "fa_pen": fa_pen.detach()}
+        return ce + weight * fa_pen, {"ce": ce.detach(), "fa_pen": fa_pen.detach()}
     return step
 
 
-def operant_step(shuffle=False):
+def axis_step(target):
+    u, centre, scale = target["u"], target["centre"], target["scale"]
+
+    def step(model, batch):
+        x, y, _, fa, _, _, lengths = batch
+        _, _, h = model(x, return_hidden=True)
+        logit = scale * (h @ u - centre)
+        valid = torch.arange(x.shape[1], device=x.device)[None, :] < lengths[:, None]
+        sig, noise = (y == 1) & valid, (fa > 0) & valid
+        loss = (F.softplus(-logit)[sig].mean() + F.softplus(logit)[noise].mean()) / 2
+        return loss, {"axis_loss": loss.detach()}
+    return step
+
+
+def operant_step(shuffle=False, reward_from="position"):
     """Reinforcement on the neural state rather than on an action. The network's own recurrent
     noise is the exploration; the reward of a trial is minus the delay-window error of the frozen
     position decoder on the states the network actually visited; the score function of the noise
@@ -141,11 +162,13 @@ def operant_step(shuffle=False):
     here on every parameter and with the optimiser the other conditions use. That is the whole of
     what a scalar computed from the state can teach without differentiating the decoder, which
     would make it the supervised condition. `shuffle` scores each trial against another trial's
-    position, the null that asks for nothing."""
+    position, the null that asks for nothing. `reward_from="task"` pays the trial's outcome under
+    the greedy release instead, over the whole trial: the positive control, which says whether this
+    learner can learn anything from a scalar at this scale."""
     def step(model, batch):
-        x, _, _, _, xy_true, delay_mask, _ = batch
+        x, y, _, fa, xy_true, delay_mask, lengths = batch
         model.noise_log, model.preact_log = [], []
-        _, _, h = model(x, return_hidden=True)
+        logits, _, h = model(x, return_hidden=True)
         xi = torch.stack(model.noise_log, 1).detach()
         mean = torch.stack(model.preact_log, 1)
         model.noise_log = model.preact_log = None
@@ -154,12 +177,18 @@ def operant_step(shuffle=False):
         with torch.no_grad():
             err = ((model.decode_xy(h) - xy_true) ** 2).sum(-1)
             pos_err = (err * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
-            advantage = -(pos_err - pos_err.mean()) / (pos_err.std() + 1e-6)
+            if reward_from == "task":
+                reward, _ = local.outcomes(logits.argmax(-1), y, fa, lengths)
+                delay_mask = (torch.arange(x.shape[1], device=x.device)[None, :]
+                              < lengths[:, None]).float()
+            else:
+                reward = -pos_err
+            advantage = (reward - reward.mean()) / (reward.std() + 1e-6)
         # d/dtheta of log N(mean + xi | mean, sigma^2) is (xi / sigma^2) d mean/dtheta
         score = ((xi / model.sigma_eff ** 2) * mean).sum(-1)
         score = (score * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
         loss = -(advantage * score).mean()
-        return loss, {"pos_err": pos_err.mean()}
+        return loss, {"pos_err": pos_err.mean(), "reward": reward.mean()}
     return step
 
 
@@ -226,9 +255,9 @@ def loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, de
     return dict(history)
 
 
-def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY):
-    """REINFORCE on a sampled release time. Hit and correct rejection are +1, false alarm, miss and
-    abort -1, with the advantage normalised within the batch."""
+def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0):
+    """REINFORCE on a sampled release time. Hit and correct rejection are +1, a false alarm
+    -fa_cost, miss and abort -1, with the advantage normalised within the batch."""
     logp_hold, logp_release = logp[..., 0], logp[..., 1]
     b, t = logp_release.shape
     device = logp.device
@@ -246,7 +275,9 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY):
         has_target = target.any(1)
         correct_rejection = (~did_release) & (~has_target)
         correct = hit | correct_rejection
-        reward = torch.where(correct, torch.ones(b, device=device), -torch.ones(b, device=device))
+        reward = torch.where(correct, torch.ones(b, device=device),
+                             torch.where(false_alarm, -fa_cost * torch.ones(b, device=device),
+                                         -torch.ones(b, device=device)))
         adv = (reward - reward.mean()) / (reward.std() + 1e-6)
 
     before = (steps < first[:, None]) & valid
@@ -264,7 +295,7 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY):
 
 
 def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, grad_clip=5.0,
-              log_every=50, optimizer="adam"):
+              log_every=50, optimizer="adam", fa_cost=1.0):
     for p in (model.W_aux, model.b_aux, model.W_out, model.b_out):
         p.requires_grad_(False)
     params = [p for p in model.parameters() if p.requires_grad]
@@ -278,7 +309,7 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
         model.train()
         x, target, fa, valid = outcome_batch(env_fn, BATCH, device)
         logits, _, _ = model(x, return_hidden=True)
-        loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid)
+        loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid, fa_cost=fa_cost)
         if anchor:
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()

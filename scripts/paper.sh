@@ -516,6 +516,95 @@ block24() {
     wait
 }
 
+# 25. The operant learner's positive control. Block 23 found that a reward computed by the position
+#     decoder does not move the code, but the same score-function learner was never shown to learn
+#     anything; a learner that learns nothing says nothing about the signal. Here it is paid the
+#     task's outcome instead. It passes if behaviour gains more than the resolution on at least four
+#     networks at either rate.
+block25() {
+    for lr in 1e-4 3e-4; do for net in $NETS; do
+        run "nf_c1_operant_task_lr${lr}_net$net" -m experiments.nf --task c1 --cond operant \
+            --operant-reward task --net $net --lr $lr --eval-n 10000
+    done; done
+    wait
+}
+
+# 26. The resolution of the threshold sweep itself, for the equivalence margins: ten sweeps of one
+#     frozen network per task.
+block26() {
+    for task in c1 context; do
+        run "criterion_resolution_$task" -m experiments.criterion_resolution --task $task --net 0
+    done
+    wait
+}
+
+# 27. Criterion theory. Reward on the trial outcome should leave the decoder's own threshold at the
+#     payoff-optimal point of the network's final ROC, for whatever the payoffs are; cross-entropy
+#     has no payoffs in it and should not. The false-alarm cost of the reward and the weight of
+#     the false-alarm penalty in the supervised loss are the doses. A fourth repeat (rep 3), so
+#     the names do not collide with blocks 17 and 22. Predictions are registered before the runs.
+block27() {
+    for net in $NETS; do
+        for cost in 1 2 4; do
+            run "nf_c1_reward_fac${cost}_net$net" -m experiments.nf --task c1 --cond reward \
+                --net $net --rep 3 --fa-cost $cost --eval-n 10000 --criterion
+        done
+        for weight in 0 0.4 1.6; do
+            run "nf_c1_control_fa_fap${weight}_net$net" -m experiments.nf --task c1 \
+                --cond control_fa --net $net --rep 3 --fa-penalty $weight --lr 1e-4 \
+                --eval-n 10000 --criterion
+        done
+    done
+    wait
+}
+
+# 28. The first step, split into criterion and separation, for every signal and every angle of the
+#     axis target, on the frozen networks. Cheap: gradients and a held-out read-out, no training.
+block28() {
+    for net in $NETS; do
+        run "components_net$net" -m experiments.components --net $net
+    done
+    wait
+}
+
+# 29. The axis target as a dose: a frozen one-dimensional classifier separating response steps from
+#     false-alarm steps along a direction at cosine -1, -0.5, 0, 0.5 and 1 to the decision axis,
+#     inside the activity manifold, with no task term. The prediction is a slope of discriminability
+#     on the cosine that changes sign, and a criterion shift that block 28 predicts per angle.
+block29() {
+    for cos in -1 -0.5 0 0.5 1; do for net in $NETS; do
+        run "nf_c1_axis_cos${cos}_net$net" -m experiments.nf --task c1 --cond axis --cosine $cos \
+            --net $net --lr 1e-4 --eval-n 10000 --criterion
+    done; done
+    wait
+}
+
+# 30. The second batch: networks 10-24, trained with the same curriculum, registered as an
+#     independent replication with two primary contrasts -- the context contrast in area under the
+#     ROC, and the c1 criterion shift (the best offset at the end, reward against control).
+BATCH2="10 11 12 13 14 15 16 17 18 19 20 21 22 23 24"
+
+block30pretrain() {
+    for net in $BATCH2; do
+        run "pretrain_net$net" -m experiments.pretrain --net $net
+    done
+    wait
+    for task in c1 context; do for net in $BATCH2; do
+        run "head_${task}_net$net" -m experiments.fit_head --task $task --net $net
+    done; done
+    wait
+}
+
+block30() {
+    for net in $BATCH2; do for rep in 0 1; do for cond in control reward; do
+        run "nf_context_${cond}_b2_net${net}_r$rep" -m experiments.nf --task context \
+            --cond $cond --net $net --rep $rep --criterion
+        run "nf_c1_${cond}_b2_net${net}_r$rep" -m experiments.nf --task c1 --cond $cond \
+            --net $net --rep $rep --lr 1e-4 --eval-n 10000 --criterion
+    done; done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

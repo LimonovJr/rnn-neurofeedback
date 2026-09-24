@@ -125,6 +125,64 @@ def decode_battery(model, env_fn, n_trials=2000, device="cpu"):
     return out
 
 
+def _separation(sig, noise):
+    """Probability that a response step projects above a false-alarm step (Mann-Whitney)."""
+    both = torch.cat([sig, noise])
+    ranks = both.argsort().argsort().float() + 1
+    n1, n2 = len(sig), len(noise)
+    return float((ranks[:n1].sum() - n1 * (n1 + 1) / 2) / (n1 * n2))
+
+
+def _steps(model, env_fn, n, window_ms):
+    x, y, _, fa, _, _, lengths = trials.batch(env_fn, n, int(model.dt), window_ms=window_ms)
+    model.eval()
+    with torch.no_grad():
+        _, _, h = model(x, return_hidden=True)
+    valid = torch.arange(x.shape[1])[None, :] < lengths[:, None]
+    return h, (y == 1) & valid, (fa > 0) & valid, valid
+
+
+def decision_axis_target(model, env_fn, cosine, k=10, n=256, seed=0, window_ms=(-300, 0)):
+    """A read-out direction at an exact cosine to the decision axis, and the standardisation of the
+    state's projection on it that separates response steps from false-alarm steps at the start.
+
+    The decision axis is the release-minus-hold row of the frozen read-out. The rest of u is a
+    direction inside the top-k principal directions of the activity, orthogonal to the decision
+    axis and to the difference between the two classes' mean states, fixed by the seed: a random
+    direction there would carry a separation of its own (the two kinds of step differ in many ways,
+    time in the trial among them), and the dose would no longer be the angle. So at the start the
+    separation along u is whatever its decision-axis part carries, and at cosine 0 it is none."""
+    h, sig, noise, valid = _steps(model, env_fn, n, window_ms)
+    states = h[valid]
+    _, _, vt = torch.linalg.svd(states - states.mean(0), full_matrices=False)
+    basis = vt[:k].T
+    w = (model.W_out_eff()[1] - model.W_out_eff()[0]).detach()
+    w_hat = w / w.norm()
+    gap = h[sig].mean(0) - h[noise].mean(0)
+    # in the manifold's own coordinates: z orthogonal to the axis and to the class gap there, so
+    # r = basis z stays in the manifold and is exactly orthogonal to both
+    z = torch.randn(k, generator=torch.Generator().manual_seed(seed))
+    done = []
+    for v in (basis.T @ w_hat, basis.T @ gap):
+        for d in done:
+            v = v - (v @ d) * d
+        v = v / v.norm()
+        z = z - (z @ v) * v
+        done.append(v)
+    r = basis @ z
+    u = cosine * w_hat + float(np.sqrt(max(0.0, 1.0 - cosine ** 2))) * r / r.norm()
+    p_sig, p_noise = h[sig] @ u, h[noise] @ u
+    w_in = basis @ (basis.T @ w)
+    return dict(u=u, centre=float((p_sig.mean() + p_noise.mean()) / 2),
+                scale=float(1.0 / torch.sqrt((p_sig.var() + p_noise.var()) / 2)),
+                start_auc=_separation(p_sig, p_noise), in_manifold=float(w_in.norm() / w.norm()))
+
+
+def axis_separation(model, env_fn, u, n=256, window_ms=(-300, 0)):
+    h, sig, noise, _ = _steps(model, env_fn, n, window_ms)
+    return _separation(h[sig] @ u, h[noise] @ u)
+
+
 def delay_basis(model, env_fn, k=10, n_trials=1500, window_ms=(-300, 0), device="cpu"):
     """The intrinsic manifold of the delay: mean state, the top-k principal directions of the
     per-trial delay-mean states, and the mean radius of the states inside that subspace."""

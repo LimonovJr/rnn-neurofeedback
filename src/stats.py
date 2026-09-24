@@ -27,6 +27,17 @@ def paired(a, b):
     return float((a - b).mean()), sem(a - b), float(stats.ttest_rel(a, b).pvalue)
 
 
+def equivalence(a, b, margin):
+    """Two one-sided tests that the paired difference a - b lies inside +-margin. The p-value is
+    the larger of the two, so p < 0.05 is a positive claim that the difference is smaller than the
+    margin, not merely a failure to find one."""
+    d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+    n, mean, se = len(d), float(d.mean()), sem(d)
+    lower = 1.0 - stats.t.cdf((mean + margin) / se, n - 1)
+    upper = stats.t.cdf((mean - margin) / se, n - 1)
+    return mean, se, float(max(lower, upper))
+
+
 def resolution(repeats):
     """Two standard deviations over repeat measurements of one frozen model."""
     return 2.0 * float(np.std(np.asarray(repeats, dtype=float), ddof=1))

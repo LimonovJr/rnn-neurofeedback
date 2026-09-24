@@ -28,7 +28,7 @@ from src.training import TrainConfig, train_supervised
 
 K = 6                              # checkpoints averaged into the reported level
 CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "gated", "control_fa",
-         "operant"]
+         "operant", "axis"]
 # what the network could already do before the run, scored through the same decision read-out
 RETENTION = {"pretrain": tasks.stage(2), "patch": tasks.patch()}
 DEFAULTS = {
@@ -67,45 +67,6 @@ def policy_shift(start, end, env_fn, n=256):
     return float(kl[valid].mean())
 
 
-COARSE = np.arange(-8.0, 4.01, 0.5)
-FINE = np.arange(-0.5, 0.51, 0.125)
-
-
-def best_criterion(model, env_fn, score, n_select, n_report):
-    """The best the frozen decoder can do by moving its release threshold alone: the offset on the
-    release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw
-    so the choice does not flatter the number it is reported with. Nothing is trained, and the bias
-    is put back. An optimum on the edge of the coarse grid is reported as such."""
-    bias = model.b_out.detach().clone()
-
-    def at(offset, n):
-        with torch.no_grad():
-            model.b_out.copy_(bias)
-            model.b_out[1] += offset
-        return behaviour.measure_rates(model, env_fn, n=n, score=score)
-
-    coarse = [at(offset, n_select) for offset in COARSE]
-    centre = float(COARSE[int(np.argmax([c[0] for c in coarse]))])
-    edge = int(centre in (COARSE[0], COARSE[-1]))
-    grid = centre + FINE
-    fine = [at(offset, n_select)[0] for offset in grid]
-    best = float(grid[int(np.argmax(fine))])
-    d = at(best, n_report)[0]
-    with torch.no_grad():
-        model.b_out.copy_(bias)
-    # the ROC traced by the same sweep: every threshold at once, none of them chosen. Releasing too
-    # early is an abort, not a hit, so hits fall again at the liberal end and the points are not a
-    # curve; the area is taken under their upper convex hull, the best any threshold mixture reaches
-    hull = []
-    for point in sorted([(0.0, 0.0), (1.0, 1.0)] + [(fa, hit) for _, hit, fa in coarse]):
-        while len(hull) >= 2 and ((hull[-1][0] - hull[-2][0]) * (point[1] - hull[-2][1])
-                                  - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-2][0])) >= 0:
-            hull.pop()
-        hull.append(point)
-    auc = sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(hull, hull[1:]))
-    return best, round(d, 4), edge, round(auc, 4)
-
-
 def retention(model, n):
     return {name: round(behaviour.measure(model, env, n=n), 4) for name, env in RETENTION.items()}
 
@@ -136,11 +97,20 @@ def run(a):
 
     crit = {}
     if a.criterion:
-        offset, d, edge, auc = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_start=offset, crit_d_start=d, crit_edge_start=edge,
-                    auc_start=auc)
-        print(f"  best threshold at the start: offset {offset:+.3f}, d'={d:+.4f}"
-              + (" (on the edge of the grid)" if edge else ""), flush=True)
+        sweep = behaviour.threshold_sweep(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_start=sweep["offset"], crit_d_start=sweep["d"],
+                    crit_edge_start=sweep["edge"], auc_start=sweep["auc"], roc_start=sweep["roc"])
+        print(f"  best threshold at the start: offset {sweep['offset']:+.3f}, d'={sweep['d']:+.4f}"
+              + (" (on the edge of the grid)" if sweep["edge"] else ""), flush=True)
+
+    target = None
+    if a.cond == "axis":
+        target = representation.decision_axis_target(model, env_fn, a.cosine, seed=a.net)
+        crit.update(cosine=f"{a.cosine:g}", axis_in_manifold=round(target["in_manifold"], 4),
+                    axis_auc_start=round(target["start_auc"], 4))
+        print(f"  target direction at cosine {a.cosine:+g} to the decision axis "
+              f"({target['in_manifold']:.2f} of the axis lies in the manifold); separation along it "
+              f"at the start {target['start_auc']:.3f}", flush=True)
 
     kept_before = retention(model, a.eval_n) if a.retention else {}
     if kept_before:
@@ -169,7 +139,8 @@ def run(a):
         history = signals.train(model, a.cond, env_fn, a.updates, lr=a.lr, lam=a.lam,
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
                       xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle,
-                      optimizer=a.optimizer)
+                      optimizer=a.optimizer, fa_cost=a.fa_cost, fa_penalty=a.fa_penalty,
+                      operant_reward=a.operant_reward, axis=target)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
@@ -183,10 +154,13 @@ def run(a):
 
     if a.criterion:
         model.eval()
-        offset, d, edge, auc = best_criterion(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
-        crit.update(crit_offset_end=offset, crit_d_end=d, crit_edge_end=edge, auc_end=auc)
-        print(f"  best threshold at the end: offset {offset:+.3f}, d'={d:+.4f}"
-              + (" (on the edge of the grid)" if edge else ""), flush=True)
+        sweep = behaviour.threshold_sweep(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
+        crit.update(crit_offset_end=sweep["offset"], crit_d_end=sweep["d"],
+                    crit_edge_end=sweep["edge"], auc_end=sweep["auc"], roc_end=sweep["roc"])
+        print(f"  best threshold at the end: offset {sweep['offset']:+.3f}, d'={sweep['d']:+.4f}"
+              + (" (on the edge of the grid)" if sweep["edge"] else ""), flush=True)
+    if target is not None:
+        crit.update(axis_auc_end=round(representation.axis_separation(model, env_fn, target["u"]), 4))
 
     kept_after = {}
     if a.retention:
@@ -218,6 +192,8 @@ def run(a):
                            adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}", explore_k=a.explore_k,
                            rec_noise_scale=f"{a.rec_noise_scale:g}", optimizer=a.optimizer,
+                           fa_cost=f"{a.fa_cost:g}", fa_penalty=f"{a.fa_penalty:g}"
+                           if a.fa_penalty is not None else "", operant_reward=a.operant_reward,
                            clipped=clipped,
                            all_trials=int(a.all_trials), d0=curve[0] if curve else "",
                            dW_rec=f"{d_rec:.4f}", dW_out=f"{d_out:.3e}", dW_aux=f"{d_aux:.3e}",
@@ -227,8 +203,10 @@ def run(a):
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "optimizer", "clipped", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
+                "fa_cost", "fa_penalty", "operant_reward", "cosine", "axis_in_manifold",
+                "axis_auc_start", "axis_auc_end",
                 "crit_offset_start", "crit_d_start", "crit_edge_start", "auc_start",
-                "crit_offset_end", "crit_d_end", "crit_edge_end", "auc_end",
+                "crit_offset_end", "crit_d_end", "crit_edge_end", "auc_end", "roc_start", "roc_end",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
@@ -270,6 +248,15 @@ def main():
                         "of a noisy gradient whatever its size")
     p.add_argument("--rec-noise-scale", type=float, default=1.0,
                    help="multiply the recurrent noise and keep it on at evaluation")
+    p.add_argument("--fa-cost", type=float, default=1.0,
+                   help="what a false alarm costs the reward signal; hits pay 1, misses cost 1")
+    p.add_argument("--fa-penalty", type=float,
+                   help="weight of the false-alarm penalty in control_fa (default: the ceiling arms')")
+    p.add_argument("--operant-reward", choices=["position", "task"], default="position",
+                   help="what the operant learner is paid: the position decoder, or the task outcome "
+                        "(its positive control)")
+    p.add_argument("--cosine", type=float, default=0.0,
+                   help="cosine of the axis target's direction to the decision axis")
     p.add_argument("--criterion", action="store_true",
                    help="also find the release threshold that is best for the frozen decoder, at "
                         "the start and at the end, and score it on an independent draw")
@@ -307,6 +294,10 @@ def main():
            + ("_crit" if a.criterion else "")
            + (f"_rn{a.rec_noise_scale:g}" if a.rec_noise_scale != 1.0 else "")
            + ("_sgd" if a.optimizer == "sgd" else "")
+           + (f"_fac{a.fa_cost:g}" if a.fa_cost != 1.0 else "")
+           + (f"_fap{a.fa_penalty:g}" if a.fa_penalty is not None else "")
+           + ("_task" if a.operant_reward == "task" else "")
+           + (f"_cos{a.cosine:g}" if a.cond == "axis" else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

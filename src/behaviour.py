@@ -2,6 +2,8 @@
 
 from collections import Counter
 
+import numpy as np
+import torch
 from scipy.stats import norm
 
 from src import trials
@@ -34,14 +36,72 @@ def go_nogo(tr):
     return dprime(hit, fa), hit, fa, len(go), len(nogo)
 
 
-def measure_rates(model, env_fn, n=1000, score=detection, device="cpu"):
-    """d' with the hit and false-alarm rates behind it."""
+OUTCOMES = ("correct", "false_alarm", "miss", "abort")
+COARSE = np.arange(-8.0, 4.01, 0.5)
+FINE = np.arange(-0.5, 0.51, 0.125)
+
+
+def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu"):
+    """d', the hit and false-alarm rates behind it, and the share of trials ending each way."""
     tr = trials.collect(model, env_fn, n_trials=n, device=device, batch_size=256)
     if score is go_nogo:
         d, hit, fa, _, _ = go_nogo(tr)
-        return d, hit, fa
-    hit, fa = detection_rates(tr)
-    return dprime(hit, fa), hit, fa
+    else:
+        hit, fa = detection_rates(tr)
+        d = dprime(hit, fa)
+    counts = Counter(t["train_outcome"] for t in tr)
+    return dict(d=d, hit=hit, fa=fa, **{k: counts.get(k, 0) / max(len(tr), 1) for k in OUTCOMES})
+
+
+def threshold_sweep(model, env_fn, score, n_select, n_report):
+    """The best the frozen decoder can do by moving its release threshold alone: the offset on the
+    release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw
+    so the choice does not flatter the number it is reported with. Nothing is trained and the bias
+    is put back. Every coarse point is kept, with the share of each outcome, so the threshold that
+    is best for any payoff can be read off afterwards."""
+    bias = model.b_out.detach().clone()
+
+    def at(offset, n):
+        with torch.no_grad():
+            model.b_out.copy_(bias)
+            model.b_out[1] += offset
+        return measure_outcomes(model, env_fn, n=n, score=score)
+
+    coarse = [at(offset, n_select) for offset in COARSE]
+    centre = float(COARSE[int(np.argmax([c["d"] for c in coarse]))])
+    grid = centre + FINE
+    fine = [at(offset, n_select)["d"] for offset in grid]
+    best = float(grid[int(np.argmax(fine))])
+    d = at(best, n_report)["d"]
+    with torch.no_grad():
+        model.b_out.copy_(bias)
+    # releasing too early is an abort, not a hit, so hits fall again at the liberal end and the
+    # points are not a curve; the area is taken under their upper convex hull, the best any
+    # threshold mixture reaches
+    hull = []
+    for point in sorted([(0.0, 0.0), (1.0, 1.0)] + [(c["fa"], c["hit"]) for c in coarse]):
+        while len(hull) >= 2 and ((hull[-1][0] - hull[-2][0]) * (point[1] - hull[-2][1])
+                                  - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-2][0])) >= 0:
+            hull.pop()
+        hull.append(point)
+    auc = sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(hull, hull[1:]))
+    roc = "|".join(f"{o:g}:" + ":".join(f"{c[k]:.4f}" for k in ("hit", "fa") + OUTCOMES)
+                   for o, c in zip(COARSE, coarse))
+    return dict(offset=best, d=round(d, 4), edge=int(centre in (COARSE[0], COARSE[-1])),
+                auc=round(auc, 4), roc=roc)
+
+
+def payoff_optimal(roc, fa_cost=1.0):
+    """The offset on a recorded sweep that maximises the expected payoff of a detection trial:
+    +1 for a hit, -fa_cost for a false alarm, -1 for a miss or an abort. Detection only: a go/no-go
+    sweep does not separate correct rejections from misses."""
+    best, value = None, -np.inf
+    for point in roc.split("|"):
+        offset, _, _, correct, false_alarm, miss, abort = (float(v) for v in point.split(":"))
+        payoff = correct - fa_cost * false_alarm - miss - abort
+        if payoff > value:
+            best, value = offset, payoff
+    return best, value
 
 
 def measure(model, env_fn, n=1000, score=detection, device="cpu"):
