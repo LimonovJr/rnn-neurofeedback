@@ -11,7 +11,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from src import runs, stats
+from src import behaviour, runs, stats
 from src.signals import LR
 
 # what a repeat of the same measurement moves by, from `resolutions` on the networks and heads the
@@ -610,13 +610,179 @@ def share(args):
               f"{np.mean([frac(best, n) for n in nets]):>+16.2f}{mean:>+12.3f}{p:>8.3f}")
 
 
+def swept(args, task="c1"):
+    """Every run of a task that recorded the threshold sweep at both ends."""
+    return [r for r in runs.read(f"{args.results}/nf_{task}_*_net*.csv")
+            if r.get("crit_d_end") and r.get("crit_d_start")]
+
+
+def per_net(rows, value):
+    out = defaultdict(list)
+    for r in rows:
+        out[int(r["net"])].append(value(r))
+    return {n: float(np.mean(v)) for n, v in out.items()}
+
+
+def margins(args):
+    out = {}
+    for task in ("c1", "context"):
+        rows = runs.read(f"{args.results}/criterion_resolution_{task}_net*.csv")
+        if rows:
+            out[task] = dict(d=max(RES_BEHAVIOUR, stats.resolution([float(r["best_d"]) for r in rows])),
+                             auc=stats.resolution([float(r["auc"]) for r in rows]))
+    return out
+
+
+def equivalence(args):
+    """The registered equivalence tests, with margins from the sweep's own resolution."""
+    m = margins(args)
+    if "c1" not in m:
+        print("needs block 26 (criterion_resolution) first")
+        return
+    print(f"margins: c1 best d' {m['c1']['d']:.3f}, c1 AUC {m['c1']['auc']:.4f}")
+    rows = [r for r in swept(args) if int(r["net"]) < 5 and int(r["updates"]) == 1200
+            and float(r["lr"]) == 1e-4
+            and (r.get("rec_noise_scale") or "1") == "1" and float(r.get("fa_cost") or 1) == 1
+            and r.get("optimizer", "adam") in ("adam", "")]
+    reward = [r for r in rows if r["cond"] == "reward" and int(r["rep"]) in (0, 1, 2)]
+    control = [r for r in rows if r["cond"] == "control" and int(r["rep"]) in (0, 1, 2)]
+    for label, key, margin in (("E1 c1 reward vs control, best d'", "crit_d_end", m["c1"]["d"]),
+                               ("E1 c1 reward vs control, AUC", "auc_end", m["c1"]["auc"])):
+        a = per_net([r for r in reward if r.get(key)], lambda r: float(r[key]))
+        b = per_net([r for r in control if r.get(key)], lambda r: float(r[key]))
+        nets = sorted(set(a) & set(b))
+        mean, se, p = stats.equivalence([a[n] for n in nets], [b[n] for n in nets], margin)
+        print(f"  {label:<40}{mean:+.4f} +- {se:.4f}  margin {margin:.4f}  p_equiv {p:.4f}")
+    noisy = [r for r in swept(args) if r.get("rec_noise_scale") == "2" and int(r["net"]) < 5]
+    a = per_net([r for r in noisy if r["cond"] == "reward"], lambda r: float(r["crit_d_end"]))
+    b = per_net([r for r in noisy if r["cond"] == "control"], lambda r: float(r["crit_d_end"]))
+    nets = sorted(set(a) & set(b))
+    if nets:
+        mean, se, p = stats.equivalence([a[n] for n in nets], [b[n] for n in nets], m["c1"]["d"])
+        print(f"  {'E2 noise x2 reward vs control, best d':<40}{mean:+.4f} +- {se:.4f}  p_equiv {p:.4f}")
+    mag = [r for r in swept(args) if r["cond"] == "expand" and r.get("kappa") == "2"]
+    end = per_net(mag, lambda r: float(r["crit_d_end"]))
+    begin = per_net(mag, lambda r: float(r["crit_d_start"]))
+    nets = sorted(end)
+    if nets:
+        mean, se, p = stats.equivalence([end[n] for n in nets], [begin[n] for n in nets], m["c1"]["d"])
+        print(f"  {'E3 magnified target, best d end - start':<40}{mean:+.4f} +- {se:.4f}  p_equiv {p:.4f}")
+
+
+def criterion(args):
+    """Block 27: where each payoff and each penalty leaves the decoder's threshold."""
+    rows = [r for r in swept(args) if int(r["rep"]) == 3 and r.get("roc_end")]
+    print(f"{'condition':<18}{'n':>3}{'payoff-optimal':>16}{'in [-0.5, 0.5]':>16}{'d-optimal':>11}{'AUC':>8}")
+    groups = [("reward", float(c), c) for c in ("1", "2", "4")] + \
+             [("control_fa", 1.0, w) for w in ("0", "0.4", "1.6")]
+    for cond, cost, dose in groups:
+        key = "fa_cost" if cond == "reward" else "fa_penalty"
+        sel = [r for r in rows if r["cond"] == cond and (r.get(key) or "1") == dose]
+        if not sel:
+            continue
+        opt = per_net(sel, lambda r: behaviour.payoff_optimal(r["roc_end"], cost)[0])
+        dopt = per_net(sel, lambda r: float(r["crit_offset_end"]))
+        auc = per_net(sel, lambda r: float(r["auc_end"]))
+        inside = sum(abs(v) <= 0.5 for v in opt.values())
+        print(f"{cond + ' ' + key[:2] + ' ' + dose:<18}{len(opt):>3}{np.mean(list(opt.values())):>+16.2f}"
+              f"{inside:>13d}/{len(opt):<2d}{np.mean(list(dopt.values())):>+11.2f}"
+              f"{np.mean(list(auc.values())):>8.3f}")
+
+
+def components(args):
+    """Block 28 against what the full runs did."""
+    rows = runs.read(f"{args.results}/components_c1_net*.csv")
+    if not rows:
+        print("needs block 28")
+        return
+    step = {s: (per_net([r for r in rows if r["signal"] == s], lambda r: float(r["criterion"])),
+                per_net([r for r in rows if r["signal"] == s], lambda r: float(r["separation"])))
+            for s in sorted({r["signal"] for r in rows})}
+    full = [r for r in swept(args) if int(r["net"]) < 5]
+    runs_of = {"control": lambda r: r["cond"] == "control" and float(r["lr"]) == 1e-4
+               and int(r["rep"]) in (0, 1) and (r.get("rec_noise_scale") or "1") == "1",
+               "control_fa": lambda r: r["cond"] == "control_fa" and int(r["rep"]) == 2,
+               "reward": lambda r: r["cond"] == "reward" and int(r["rep"]) in (0, 1)
+               and (r.get("rec_noise_scale") or "1") == "1",
+               "joint": lambda r: r["cond"] == "joint",
+               "position k1": lambda r: r["cond"] == "expand" and r.get("kappa") == "1"
+               and r.get("shuffle") in ("0", ""),
+               "position k2": lambda r: r["cond"] == "expand" and r.get("kappa") == "2",
+               "shuffled": lambda r: r["cond"] == "expand" and r.get("shuffle") == "1"}
+    print(f"{'signal':<14}{'step crit':>11}{'step sep':>10}{'run d-offset':>14}{'run best gain':>15}")
+    xs, ys, zs, ws = [], [], [], []
+    for name, pick in runs_of.items():
+        sel = [r for r in full if pick(r)]
+        if name not in step or not sel:
+            continue
+        shift = np.mean(list(per_net(sel, lambda r: float(r["crit_offset_end"])
+                                     - float(r["crit_offset_start"])).values()))
+        gain = np.mean(list(per_net(sel, lambda r: float(r["crit_d_end"])
+                                    - float(r["crit_d_start"])).values()))
+        c, sp = np.mean(list(step[name][0].values())), np.mean(list(step[name][1].values()))
+        xs.append(c), ys.append(shift), zs.append(sp), ws.append(gain)
+        print(f"{name:<14}{c:>+11.4f}{sp:>+10.4f}{shift:>+14.2f}{gain:>+15.3f}")
+    from scipy.stats import spearmanr
+    if len(xs) > 2:
+        print(f"C1 step criterion vs run offset change: rho = {spearmanr(xs, ys)[0]:+.2f}")
+        print(f"C2 step separation vs run best-threshold gain: rho = {spearmanr(zs, ws)[0]:+.2f}")
+
+
+def axis(args):
+    """Block 29: the axis target's cosine as a dose."""
+    rows = [r for r in swept(args) if r["cond"] == "axis"]
+    if not rows:
+        print("needs block 29")
+        return
+    cells = [(int(r["net"]), float(r["cosine"]), float(r["crit_d_end"]) - float(r["crit_d_start"]),
+              float(np.mean(curve(r)[1][-6:])) - curve(r)[1][0], float(r["axis_auc_start"]),
+              float(r["axis_auc_end"])) for r in rows]
+    print(f"{'cosine':>7}{'n':>3}{'best gain':>11}{'own change':>12}{'sep start':>11}{'sep end':>9}")
+    for cos in sorted({c[1] for c in cells}):
+        at = [c for c in cells if c[1] == cos]
+        print(f"{cos:>+7.1f}{len(at):>3}" + "".join(f"{np.mean([c[i] for c in at]):>+11.3f}"
+                                                  for i in (2, 3)) +
+              f"{np.mean([c[4] for c in at]):>11.3f}{np.mean([c[5] for c in at]):>9.3f}")
+    nets = sorted({c[0] for c in cells})
+    x = np.array([c[1] for c in cells])
+    y = np.array([c[2] - np.mean([d[2] for d in cells if d[0] == c[0]]) for c in cells])
+    x = x - np.array([np.mean([d[1] for d in cells if d[0] == c[0]]) for c in cells])
+    slope = float((x * y).sum() / (x * x).sum())
+    resid = y - slope * x
+    dof = len(cells) - len(nets) - 1
+    se = float(np.sqrt((resid ** 2).sum() / dof / (x * x).sum()))
+    from scipy import stats as sps
+    p = 2 * (1 - sps.t.cdf(abs(slope / se), dof))
+    print(f"D1 best-threshold gain on cosine, within network: slope {slope:+.3f} +- {se:.3f}, p = {p:.4f}")
+
+
+def batch2(args):
+    """Block 30: the two registered primaries on networks 10-24."""
+    nets = set(range(10, 25))
+    for label, task, key, cond_a, cond_b in (("B1 context AUC, reward - control", "context", "auc_end",
+                                              "reward", "control"),
+                                             ("B2 c1 best offset, reward - control", "c1",
+                                              "crit_offset_end", "reward", "control")):
+        rows = [r for r in swept(args, task) if int(r["net"]) in nets and int(r["rep"]) in (0, 1)]
+        a = per_net([r for r in rows if r["cond"] == cond_a], lambda r: float(r[key]))
+        b = per_net([r for r in rows if r["cond"] == cond_b], lambda r: float(r[key]))
+        both = sorted(set(a) & set(b))
+        if len(both) < 2:
+            print(f"{label}: not enough networks yet ({len(both)})")
+            continue
+        mean, se, p = stats.paired([a[n] for n in both], [b[n] for n in both])
+        print(f"{label:<38}{mean:+.4f} +- {se:.4f}  p = {p:.4f}  n = {len(both)}  "
+              f"{'passes' if p < 0.025 else 'does not pass'} at 0.025")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
           "manifold": manifold,
           "representation": representation, "gradients": gradients,
           "projection": projection, "movement": movement, "retention": retention,
-          "share": share}
+          "share": share, "equivalence": equivalence, "criterion": criterion,
+          "components": components, "axis": axis, "batch2": batch2}
 
 
 def main():
