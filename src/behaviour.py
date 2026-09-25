@@ -41,9 +41,9 @@ COARSE = np.arange(-8.0, 4.01, 0.5)
 FINE = np.arange(-0.5, 0.51, 0.125)
 
 
-def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu"):
+def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu", sampled=False):
     """d', the hit and false-alarm rates behind it, and the share of trials ending each way."""
-    tr = trials.collect(model, env_fn, n_trials=n, device=device, batch_size=256)
+    tr = trials.collect(model, env_fn, n_trials=n, device=device, batch_size=256, sampled=sampled)
     if score is go_nogo:
         d, hit, fa, _, _ = go_nogo(tr)
     else:
@@ -53,7 +53,7 @@ def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu"):
     return dict(d=d, hit=hit, fa=fa, **{k: counts.get(k, 0) / max(len(tr), 1) for k in OUTCOMES})
 
 
-def threshold_sweep(model, env_fn, score, n_select, n_report):
+def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False):
     """The best the frozen decoder can do by moving its release threshold alone: the offset on the
     release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw
     so the choice does not flatter the number it is reported with. Nothing is trained and the bias
@@ -65,7 +65,7 @@ def threshold_sweep(model, env_fn, score, n_select, n_report):
         with torch.no_grad():
             model.b_out.copy_(bias)
             model.b_out[1] += offset
-        return measure_outcomes(model, env_fn, n=n, score=score)
+        return measure_outcomes(model, env_fn, n=n, score=score, sampled=sampled)
 
     coarse = [at(offset, n_select) for offset in COARSE]
     centre = float(COARSE[int(np.argmax([c["d"] for c in coarse]))])

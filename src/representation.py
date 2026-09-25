@@ -175,12 +175,19 @@ def decision_axis_target(model, env_fn, cosine, k=10, n=256, seed=0, window_ms=(
     w_in = basis @ (basis.T @ w)
     return dict(u=u, centre=float((p_sig.mean() + p_noise.mean()) / 2),
                 scale=float(1.0 / torch.sqrt((p_sig.var() + p_noise.var()) / 2)),
-                start_auc=_separation(p_sig, p_noise), in_manifold=float(w_in.norm() / w.norm()))
+                start_auc=_separation(p_sig, p_noise), start_m=_standardised(p_sig, p_noise),
+                in_manifold=float(w_in.norm() / w.norm()))
+
+
+def _standardised(sig, noise):
+    """Difference of the two classes' means along a direction, in pooled standard deviations."""
+    return float((sig.mean() - noise.mean()) / torch.sqrt((sig.var() + noise.var()) / 2))
 
 
 def axis_separation(model, env_fn, u, n=256, window_ms=(-300, 0)):
+    """Separation along u as an area and in pooled standard deviations."""
     h, sig, noise, _ = _steps(model, env_fn, n, window_ms)
-    return _separation(h[sig] @ u, h[noise] @ u)
+    return _separation(h[sig] @ u, h[noise] @ u), _standardised(h[sig] @ u, h[noise] @ u)
 
 
 def delay_basis(model, env_fn, k=10, n_trials=1500, window_ms=(-300, 0), device="cpu"):

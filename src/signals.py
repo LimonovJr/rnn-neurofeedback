@@ -49,7 +49,8 @@ ENTROPY = 0.05
 
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
           hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
-          optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None):
+          optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
+          axis_increment=None):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
@@ -68,7 +69,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
     elif cond == "operant":
         step = operant_step(shuffle, operant_reward)
     elif cond == "axis":
-        step = axis_step(axis)
+        step = axis_step(axis, axis_increment)
     elif cond == "reward_aux":
         step = reward_aux_step(lam)
     else:
@@ -139,15 +140,25 @@ def control_fa_step(weight):
     return step
 
 
-def axis_step(target):
+def axis_step(target, increment=None):
+    """The frozen classifier's loss, or -- with `increment` -- a demand for the same rise in
+    separation along u at every angle: the standardised gap between the two classes along u is
+    pulled to its starting value plus `increment`. The classifier's loss asks more of a direction
+    the further it starts from being satisfied, which ties the dose to the starting distance; the
+    increment asks the same of every direction, so the angle is left as the only dose."""
     u, centre, scale = target["u"], target["centre"], target["scale"]
 
     def step(model, batch):
         x, y, _, fa, _, _, lengths = batch
         _, _, h = model(x, return_hidden=True)
-        logit = scale * (h @ u - centre)
         valid = torch.arange(x.shape[1], device=x.device)[None, :] < lengths[:, None]
         sig, noise = (y == 1) & valid, (fa > 0) & valid
+        if increment is not None:
+            p_sig, p_noise = h[sig] @ u, h[noise] @ u
+            gap = (p_sig.mean() - p_noise.mean()) / torch.sqrt((p_sig.var() + p_noise.var()) / 2)
+            loss = (gap - (target["start_m"] + increment)) ** 2
+            return loss, {"axis_gap": gap.detach()}
+        logit = scale * (h @ u - centre)
         loss = (F.softplus(-logit)[sig].mean() + F.softplus(logit)[noise].mean()) / 2
         return loss, {"axis_loss": loss.detach()}
     return step

@@ -100,6 +100,9 @@ def run(a):
         sweep = behaviour.threshold_sweep(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
         crit.update(crit_offset_start=sweep["offset"], crit_d_start=sweep["d"],
                     crit_edge_start=sweep["edge"], auc_start=sweep["auc"], roc_start=sweep["roc"])
+        if a.sampled_sweep:
+            crit.update(roc_start_sampled=behaviour.threshold_sweep(
+                model, env_fn, cfg["score"], a.criterion_n, a.eval_n, sampled=True)["roc"])
         print(f"  best threshold at the start: offset {sweep['offset']:+.3f}, d'={sweep['d']:+.4f}"
               + (" (on the edge of the grid)" if sweep["edge"] else ""), flush=True)
 
@@ -107,7 +110,9 @@ def run(a):
     if a.cond == "axis":
         target = representation.decision_axis_target(model, env_fn, a.cosine, seed=a.net)
         crit.update(cosine=f"{a.cosine:g}", axis_in_manifold=round(target["in_manifold"], 4),
-                    axis_auc_start=round(target["start_auc"], 4))
+                    axis_auc_start=round(target["start_auc"], 4),
+                    axis_m_start=round(target["start_m"], 4),
+                    axis_increment=f"{a.axis_increment:g}" if a.axis_increment is not None else "")
         print(f"  target direction at cosine {a.cosine:+g} to the decision axis "
               f"({target['in_manifold']:.2f} of the axis lies in the manifold); separation along it "
               f"at the start {target['start_auc']:.3f}", flush=True)
@@ -140,7 +145,8 @@ def run(a):
                       train_decoder=a.train_decoder, eval_every=a.eval_every, hook=hook,
                       xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle,
                       optimizer=a.optimizer, fa_cost=a.fa_cost, fa_penalty=a.fa_penalty,
-                      operant_reward=a.operant_reward, axis=target)
+                      operant_reward=a.operant_reward, axis=target,
+                      axis_increment=a.axis_increment)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
@@ -157,10 +163,14 @@ def run(a):
         sweep = behaviour.threshold_sweep(model, env_fn, cfg["score"], a.criterion_n, a.eval_n)
         crit.update(crit_offset_end=sweep["offset"], crit_d_end=sweep["d"],
                     crit_edge_end=sweep["edge"], auc_end=sweep["auc"], roc_end=sweep["roc"])
+        if a.sampled_sweep:
+            crit.update(roc_end_sampled=behaviour.threshold_sweep(
+                model, env_fn, cfg["score"], a.criterion_n, a.eval_n, sampled=True)["roc"])
         print(f"  best threshold at the end: offset {sweep['offset']:+.3f}, d'={sweep['d']:+.4f}"
               + (" (on the edge of the grid)" if sweep["edge"] else ""), flush=True)
     if target is not None:
-        crit.update(axis_auc_end=round(representation.axis_separation(model, env_fn, target["u"]), 4))
+        auc_u, m_u = representation.axis_separation(model, env_fn, target["u"])
+        crit.update(axis_auc_end=round(auc_u, 4), axis_m_end=round(m_u, 4))
 
     kept_after = {}
     if a.retention:
@@ -203,10 +213,11 @@ def run(a):
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "optimizer", "clipped", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
-                "fa_cost", "fa_penalty", "operant_reward", "cosine", "axis_in_manifold",
-                "axis_auc_start", "axis_auc_end",
+                "fa_cost", "fa_penalty", "operant_reward", "cosine", "axis_increment",
+                "axis_in_manifold", "axis_auc_start", "axis_auc_end", "axis_m_start", "axis_m_end",
                 "crit_offset_start", "crit_d_start", "crit_edge_start", "auc_start",
                 "crit_offset_end", "crit_d_end", "crit_edge_end", "auc_end", "roc_start", "roc_end",
+                "roc_start_sampled", "roc_end_sampled",
                 "crossnobis", "pr",
                 "crossnobis_start", "pr_start", "dW_rec", "dW_out", "dW_aux",
                 "curve_upd", "curve_dprime"])
@@ -257,6 +268,11 @@ def main():
                         "(its positive control)")
     p.add_argument("--cosine", type=float, default=0.0,
                    help="cosine of the axis target's direction to the decision axis")
+    p.add_argument("--axis-increment", type=float,
+                   help="ask the axis target for this rise in standardised separation along u, the "
+                        "same at every angle, instead of the classifier's loss")
+    p.add_argument("--sampled-sweep", action="store_true",
+                   help="also sweep the threshold with sampled releases, the policy reward trains")
     p.add_argument("--criterion", action="store_true",
                    help="also find the release threshold that is best for the frozen decoder, at "
                         "the start and at the end, and score it on an independent draw")
@@ -298,6 +314,8 @@ def main():
            + (f"_fap{a.fa_penalty:g}" if a.fa_penalty is not None else "")
            + ("_task" if a.operant_reward == "task" else "")
            + (f"_cos{a.cosine:g}" if a.cond == "axis" else "")
+           + (f"_inc{a.axis_increment:g}" if a.axis_increment is not None else "")
+           + ("_samp" if a.sampled_sweep else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

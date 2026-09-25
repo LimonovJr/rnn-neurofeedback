@@ -605,6 +605,34 @@ block30() {
     wait
 }
 
+# 31. Why the reward learner ends conservative. It is trained on sampled releases and scored with
+#     the greedy read-out; a policy calibrated for sampling looks conservative when read greedily.
+#     The reward learner at false-alarm cost 1 and 4 and the supervised learner, each swept with both
+#     read-outs at the end. Predictions registered before the runs.
+block31() {
+    for net in $NETS; do
+        for cost in 1 4; do
+            run "nf_c1_reward_fac${cost}_samp_net$net" -m experiments.nf --task c1 --cond reward \
+                --net $net --rep 4 --fa-cost $cost --eval-n 10000 --criterion --sampled-sweep
+        done
+        run "nf_c1_control_fa_fap0_samp_net$net" -m experiments.nf --task c1 --cond control_fa \
+            --net $net --rep 4 --fa-penalty 0 --lr 1e-4 --eval-n 10000 --criterion --sampled-sweep
+    done
+    wait
+}
+
+# 32. The axis dose with the angle as the only dose: every direction is asked for the same rise of
+#     one pooled standard deviation in the separation along it, instead of the classifier's loss,
+#     whose demand grew with how far the direction started from being satisfied (block 29 could
+#     not separate the two, r = 0.97).
+block32() {
+    for cos in -1 -0.5 0 0.5 1; do for net in $NETS; do
+        run "nf_c1_axis_inc_cos${cos}_net$net" -m experiments.nf --task c1 --cond axis \
+            --cosine $cos --axis-increment 1 --net $net --lr 1e-4 --eval-n 10000 --criterion
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

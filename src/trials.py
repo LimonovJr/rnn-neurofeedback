@@ -4,10 +4,12 @@ import numpy as np
 import torch
 
 
-def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None):
+def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None, sampled=False):
     """Roll out trials under a greedy policy. `batch_size` pads several trials into one forward pass,
     which is 20-60x faster; the network is causal so padding does not change a trial's states, but
-    the noise draws differ, so batched and per-trial collection match in distribution only."""
+    the noise draws differ, so batched and per-trial collection match in distribution only.
+    `sampled` releases at the first step whose release probability fires instead, which is how the
+    reward signal's policy behaves while it learns."""
     model.eval()
     dev = torch.device(device)
 
@@ -20,7 +22,7 @@ def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None):
             gt = env.gt.astype(np.int64).copy()
             with torch.no_grad():
                 logits, _, h = model(torch.tensor(x, device=dev).unsqueeze(0), return_hidden=True)
-            out.append(record(env, x, gt, logits[0].cpu().numpy(), h[0].cpu().numpy()))
+            out.append(record(env, x, gt, logits[0].cpu().numpy(), h[0].cpu().numpy(), sampled))
         return out
 
     out, done = [], 0
@@ -41,14 +43,18 @@ def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None):
         lg, hh = logits.cpu().numpy(), h.cpu().numpy()
         for i, env in enumerate(envs):
             T = lens[i]
-            out.append(record(env, xs[i], env.gt.astype(np.int64), lg[i, :T], hh[i, :T]))
+            out.append(record(env, xs[i], env.gt.astype(np.int64), lg[i, :T], hh[i, :T], sampled))
         done += b
     return out
 
 
-def record(env, x_seq, gt_seq, logits, h):
+def record(env, x_seq, gt_seq, logits, h, sampled=False):
     """One trial dict, with the outcome reconstructed from the env's own event windows."""
-    actions = np.argmax(logits, axis=-1)
+    if sampled:
+        p_release = 1.0 / (1.0 + np.exp(logits[:, 0] - logits[:, 1]))
+        actions = (np.random.random(len(p_release)) < p_release).astype(np.int64)
+    else:
+        actions = np.argmax(logits, axis=-1)
     win = np.where(gt_seq == 1)[0]
     released = np.where(actions == 1)[0]
     resp_on = int(released[0]) if len(released) else None
