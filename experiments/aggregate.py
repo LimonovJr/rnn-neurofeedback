@@ -734,15 +734,28 @@ def axis(args):
     if not rows:
         print("needs block 29")
         return
+    for label, pick in (("classifier target (block 29)", lambda r: not r.get("axis_increment")),
+                        ("equal increment (block 32)", lambda r: bool(r.get("axis_increment")))):
+        chosen = [r for r in rows if pick(r)]
+        if chosen:
+            print(label)
+            axis_dose(chosen)
+
+
+def axis_dose(rows):
     cells = [(int(r["net"]), float(r["cosine"]), float(r["crit_d_end"]) - float(r["crit_d_start"]),
               float(np.mean(curve(r)[1][-6:])) - curve(r)[1][0], float(r["axis_auc_start"]),
-              float(r["axis_auc_end"])) for r in rows]
-    print(f"{'cosine':>7}{'n':>3}{'best gain':>11}{'own change':>12}{'sep start':>11}{'sep end':>9}")
+              float(r["axis_auc_end"]),
+              float(r["axis_m_end"]) - float(r["axis_m_start"]) if r.get("axis_m_end") else np.nan)
+             for r in rows]
+    print(f"{'cosine':>7}{'n':>3}{'best gain':>11}{'own change':>12}{'sep start':>11}{'sep end':>9}"
+          f"{'rise (SD)':>11}")
     for cos in sorted({c[1] for c in cells}):
         at = [c for c in cells if c[1] == cos]
         print(f"{cos:>+7.1f}{len(at):>3}" + "".join(f"{np.mean([c[i] for c in at]):>+11.3f}"
                                                   for i in (2, 3)) +
-              f"{np.mean([c[4] for c in at]):>11.3f}{np.mean([c[5] for c in at]):>9.3f}")
+              f"{np.mean([c[4] for c in at]):>11.3f}{np.mean([c[5] for c in at]):>9.3f}"
+              f"{np.nanmean([c[6] for c in at]):>+11.3f}")
     nets = sorted({c[0] for c in cells})
     x = np.array([c[1] for c in cells])
     y = np.array([c[2] - np.mean([d[2] for d in cells if d[0] == c[0]]) for c in cells])
@@ -775,6 +788,26 @@ def batch2(args):
               f"{'passes' if p < 0.025 else 'does not pass'} at 0.025")
 
 
+def readout(args):
+    """Block 31: the payoff-optimal threshold of each learner under the greedy read-out it is scored
+    with and under the sampled one the reward signal trains with."""
+    rows = [r for r in swept(args) if r.get("roc_end_sampled")]
+    print(f"{'learner':<22}{'n':>3}{'greedy':>9}{'in +-0.5':>10}{'sampled':>9}{'in +-0.5':>10}{'<= -0.5':>9}")
+    for cond, key, dose in (("reward", "fa_cost", "1"), ("reward", "fa_cost", "4"),
+                            ("control_fa", "fa_penalty", "0")):
+        sel = [r for r in rows if r["cond"] == cond and (r.get(key) or "1") == dose]
+        if not sel:
+            continue
+        cost = float(dose) if cond == "reward" else 1.0
+        greedy = per_net(sel, lambda r: behaviour.payoff_optimal(r["roc_end"], cost)[0])
+        sampled = per_net(sel, lambda r: behaviour.payoff_optimal(r["roc_end_sampled"], cost)[0])
+        n = len(greedy)
+        print(f"{cond + ' ' + dose:<22}{n:>3}{np.mean(list(greedy.values())):>+9.2f}"
+              f"{sum(abs(v) <= 0.5 for v in greedy.values()):>8d}/{n}"
+              f"{np.mean(list(sampled.values())):>+9.2f}{sum(abs(v) <= 0.5 for v in sampled.values()):>8d}/{n}"
+              f"{sum(v <= -0.5 for v in sampled.values()):>7d}/{n}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -782,7 +815,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "representation": representation, "gradients": gradients,
           "projection": projection, "movement": movement, "retention": retention,
           "share": share, "equivalence": equivalence, "criterion": criterion,
-          "components": components, "axis": axis, "batch2": batch2}
+          "components": components, "axis": axis, "batch2": batch2, "readout": readout}
 
 
 def main():
