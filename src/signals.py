@@ -50,14 +50,14 @@ ENTROPY = 0.05
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
           hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
           optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
-          axis_increment=None):
+          axis_increment=None, entropy=ENTROPY):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
     lr = LR[cond] if lr is None else lr
     if cond == "reward":
         return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor,
-                         optimizer=optimizer, fa_cost=fa_cost)
+                         optimizer=optimizer, fa_cost=fa_cost, entropy=entropy)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
@@ -306,7 +306,7 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0):
 
 
 def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, grad_clip=5.0,
-              log_every=50, optimizer="adam", fa_cost=1.0):
+              log_every=50, optimizer="adam", fa_cost=1.0, entropy=ENTROPY):
     for p in (model.W_aux, model.b_aux, model.W_out, model.b_out):
         p.requires_grad_(False)
     params = [p for p in model.parameters() if p.requires_grad]
@@ -320,7 +320,8 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
         model.train()
         x, target, fa, valid = outcome_batch(env_fn, BATCH, device)
         logits, _, _ = model(x, return_hidden=True)
-        loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid, fa_cost=fa_cost)
+        loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid,
+                                  ent_coef=entropy, fa_cost=fa_cost)
         if anchor:
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()

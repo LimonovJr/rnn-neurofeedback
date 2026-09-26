@@ -75,6 +75,17 @@ def run(a):
     cfg = DEFAULTS[a.task]
     env_fn = cfg["env"]
     model = load(a.net, head=a.task)
+    if a.refit_decoder:
+        # the decoder a neurofeedback or BCI protocol uses is fitted afterwards, in a calibration
+        # session, not trained together with the network: a fresh read-out, fitted on the frozen
+        # state by read-out-only supervised training (the instrument's arm A), then frozen
+        torch.manual_seed(1000 + a.net)
+        with torch.no_grad():
+            model.W_out.normal_(0.0, 1.0 / np.sqrt(model.W_out.shape[1]))
+            model.W_out.mul_(model.out_mask)
+            model.b_out.zero_()
+        adapt_decoder(model, env_fn, a.refit_decoder, 1e-3)
+        model.eval()
     if a.rec_noise_scale != 1.0:
         # internal noise as a degradation: raised in the buffer the network actually draws from,
         # and left on at evaluation, so behaviour is scored on the degraded network
@@ -122,12 +133,15 @@ def run(a):
         print(f"  retention at the start: {kept_before}", flush=True)
 
     upds, curve, kept = [], [], deque(maxlen=K)
+    snapshots = {}
 
     def hook(m, upd):
         d = behaviour.measure(m, env_fn, n=a.eval_n, score=cfg["score"])
         upds.append(upd)
         curve.append(round(d, 4))
         kept.append(copy.deepcopy(m.state_dict()))
+        if upd in a.save_at:
+            snapshots[upd] = copy.deepcopy(m.state_dict())
         print(f"  [{a.cond} net{a.net} r{a.rep}] upd {upd:5d}  d'={d:+.4f}", flush=True)
         if a.adapt_decoder and upd and upd % a.adapt_decoder == 0:
             adapt_decoder(m, env_fn, a.adapt_steps, a.adapt_lr)
@@ -146,7 +160,7 @@ def run(a):
                       xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle,
                       optimizer=a.optimizer, fa_cost=a.fa_cost, fa_penalty=a.fa_penalty,
                       operant_reward=a.operant_reward, axis=target,
-                      axis_increment=a.axis_increment)
+                      axis_increment=a.axis_increment, entropy=a.entropy)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
@@ -188,7 +202,14 @@ def run(a):
 
     # saved after training and outside the hook, so no evaluation draws sit between the reported
     # curve and the weights the representation pass will read
-    if a.ckpt_dir:
+    if snapshots:
+        stem = os.path.splitext(os.path.basename(a.out))[0]
+        for upd, state in snapshots.items():
+            save(state, CKPT / a.ckpt_dir / f"{stem}_u{upd}.pt", cond=a.cond, net=a.net,
+                 rep=a.rep, upd=int(upd), run=stem)
+        print(f"  wrote {len(snapshots)} checkpoints at {sorted(snapshots)} to "
+              f"{CKPT / a.ckpt_dir}", flush=True)
+    elif a.ckpt_dir:
         for upd, state in zip(upds[-K:], kept):
             save(state, CKPT / a.ckpt_dir / f"{a.cond}_net{a.net}_r{a.rep}_u{upd}.pt",
                  cond=a.cond, net=a.net, rep=a.rep, upd=int(upd))
@@ -202,6 +223,8 @@ def run(a):
                            adapt_decoder=a.adapt_decoder or 0,
                            rule=a.rule, explore=f"{a.explore:g}", explore_k=a.explore_k,
                            rec_noise_scale=f"{a.rec_noise_scale:g}", optimizer=a.optimizer,
+                           refit_decoder=a.refit_decoder, entropy=f"{a.entropy:g}",
+                           save_at=runs.joined(sorted(a.save_at)),
                            fa_cost=f"{a.fa_cost:g}", fa_penalty=f"{a.fa_penalty:g}"
                            if a.fa_penalty is not None else "", operant_reward=a.operant_reward,
                            clipped=clipped,
@@ -211,7 +234,8 @@ def run(a):
                            **start, **end, **kept_after, **crit),
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
-                "explore_k", "rec_noise_scale", "optimizer", "clipped", "all_trials", "d0",
+                "explore_k", "rec_noise_scale", "optimizer", "clipped", "refit_decoder", "entropy",
+                "save_at", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
                 "fa_cost", "fa_penalty", "operant_reward", "cosine", "axis_increment",
                 "axis_in_manifold", "axis_auc_start", "axis_auc_end", "axis_m_start", "axis_m_end",
@@ -268,6 +292,13 @@ def main():
                         "(its positive control)")
     p.add_argument("--cosine", type=float, default=0.0,
                    help="cosine of the axis target's direction to the decision axis")
+    p.add_argument("--save-at", default="",
+                   help="comma-separated updates at which to keep the whole network, into --ckpt-dir")
+    p.add_argument("--refit-decoder", type=int, default=0,
+                   help="replace the decision read-out by a fresh one fitted on the frozen state for "
+                        "this many read-out-only updates, as a calibration session would")
+    p.add_argument("--entropy", type=float, default=signals.ENTROPY,
+                   help="weight of the reward signal's entropy bonus")
     p.add_argument("--axis-increment", type=float,
                    help="ask the axis target for this rise in standardised separation along u, the "
                         "same at every angle, instead of the classifier's loss")
@@ -301,6 +332,9 @@ def main():
     a.eval_every = a.eval_every or cfg["eval_every"]
     a.eval_n = a.eval_n or cfg["eval_n"]
     a.lr = a.lr or (1e-4 if a.rule == "local" else signals.LR[a.cond])
+    a.save_at = {int(u) for u in a.save_at.split(",") if u}
+    if a.save_at and not a.ckpt_dir:
+        p.error("--save-at needs --ckpt-dir")
     # every knob that changes what a run measures goes into its name, or a new condition would
     # collide with an old result and be skipped as already done
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
@@ -316,6 +350,8 @@ def main():
            + (f"_cos{a.cosine:g}" if a.cond == "axis" else "")
            + (f"_inc{a.axis_increment:g}" if a.axis_increment is not None else "")
            + ("_samp" if a.sampled_sweep else "")
+           + (f"_refit{a.refit_decoder}" if a.refit_decoder else "")
+           + (f"_ent{a.entropy:g}" if a.entropy != signals.ENTROPY else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

@@ -315,6 +315,8 @@ def published(r, target="target"):
             and float(r.get("anchor") or 0) == 0 and not int(r.get("adapt_decoder") or 0)
             and r.get("rule") in ("bptt", "", None) and "_move_" not in r["_file"]
             and float(r.get("rec_noise_scale") or 1) == 1 and not r.get("crit_d_end")
+            and not r.get("save_at") and not int(r.get("refit_decoder") or 0)
+            and float(r.get("entropy") or 0.05) == 0.05
             and not r.get("kl_task"))
 
 

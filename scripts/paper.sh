@@ -633,6 +633,60 @@ block32() {
     wait
 }
 
+# 33. The c1 signals again, keeping the whole network at 0, 150, 300, 600 and 1200 updates, so the
+#     questions the end point cannot answer can be asked of the saved states (block 34): is
+#     discriminability the same before saturation, what does noise at evaluation do, how many
+#     dimensions does the change occupy, and where does it go relative to the decision read-out.
+#     A seventh repeat (rep 6), so the names do not collide with earlier blocks.
+block33() {
+    for net in $NETS; do
+        run "steps_reward_net$net" -m experiments.nf --task c1 --cond reward --net $net --rep 6 \
+            --eval-n 10000 --save-at 0,150,300,600,1200 --ckpt-dir nf_c1_steps
+        run "steps_control_net$net" -m experiments.nf --task c1 --cond control --net $net --rep 6 \
+            --lr 1e-4 --eval-n 10000 --save-at 0,150,300,600,1200 --ckpt-dir nf_c1_steps
+        run "steps_control_fa_net$net" -m experiments.nf --task c1 --cond control_fa --net $net \
+            --rep 6 --lr 1e-4 --eval-n 10000 --save-at 0,150,300,600,1200 --ckpt-dir nf_c1_steps
+        run "steps_joint_net$net" -m experiments.nf --task c1 --cond joint --net $net --rep 6 \
+            --eval-n 10000 --save-at 0,150,300,600,1200 --ckpt-dir nf_c1_steps
+        run "steps_k2_net$net" -m experiments.nf --task c1 --cond expand --kappa 2 --net $net \
+            --rep 6 --lr 1e-4 --eval-n 10000 --save-at 0,150,300,600,1200 --ckpt-dir nf_c1_steps
+        run "steps_shuf_net$net" -m experiments.nf --task c1 --cond expand --kappa 1 --shuffle \
+            --net $net --rep 6 --lr 1e-4 --eval-n 10000 --save-at 0,150,300,600,1200 \
+            --ckpt-dir nf_c1_steps
+    done
+    wait
+}
+
+block34() {
+    for net in $NETS; do
+        run "stepwise_net$net" -m experiments.stepwise --net $net
+    done
+    wait
+}
+
+# 35. A decoder fitted the way a protocol fits one: a fresh decision read-out trained on the frozen
+#     state for 2000 read-out-only updates (the instrument's arm A), then frozen, and reward against
+#     supervision through it. The question is whether "one ROC, different operating points" survives
+#     a decoder that was not trained together with the network.
+block35() {
+    for net in $NETS; do for cond in reward control; do
+        run "refit_${cond}_net$net" -m experiments.nf --task c1 --cond $cond --net $net --rep 7 \
+            --lr 1e-4 --refit-decoder 2000 --eval-n 10000 --criterion
+    done; done
+    wait
+}
+
+# 36. The reward signal's entropy bonus (0.05 throughout) pulls every step's release probability
+#     toward one half, and may set part of the reward learner's operating point. The reward learner
+#     at bonus 0 and 0.01, swept with both read-outs.
+block36() {
+    for ent in 0 0.01; do for net in $NETS; do
+        run "entropy_${ent}_net$net" -m experiments.nf --task c1 --cond reward --net $net --rep 8 \
+            --entropy $ent --eval-n 10000 --criterion --sampled-sweep
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
