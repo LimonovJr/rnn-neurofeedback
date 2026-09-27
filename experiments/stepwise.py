@@ -44,6 +44,31 @@ def sweep(model, n_select, n_report, sampled=False):
                                      sampled=sampled)
 
 
+def passage(model, batch):
+    """The release margin during the hold and in the response window, read the way a greedy release
+    reads it: a trial releases at the first step where margin plus offset is above zero, so what
+    sets a trial's effective criterion is the largest margin it reaches, not the average one."""
+    x, y, _, _, _, _, lengths = batch
+    with torch.no_grad():
+        logits = model(x, return_hidden=True)[0]
+    margin = logits[..., 1] - logits[..., 0]
+    t = torch.arange(x.shape[1])[None, :]
+    valid = t < lengths[:, None]
+    window = (y == 1) & valid
+    first = torch.where(window.any(1), window.float().argmax(1), lengths)
+    hold = valid & (t < first[:, None])
+    keep = hold.sum(1) > 1
+    m, h, w = margin[keep], hold[keep], window[keep]
+    n = h.sum(1).float()
+    level = (m * h).sum(1) / n
+    sd = (((m - level[:, None]) ** 2 * h).sum(1) / (n - 1)).sqrt()
+    low = torch.finfo(m.dtype).min
+    hold_max = m.masked_fill(~h, low).max(1).values
+    resp_max = m.masked_fill(~w, low).max(1).values[w.any(1)]
+    return dict(level=float(level.mean()), sd=float(sd.mean()), hold_max=float(hold_max.mean()),
+                resp_max=float(resp_max.mean()), z=float(np.sqrt(2 * np.log(n.mean()))))
+
+
 def activity_change(start, end, batch):
     """Where the change in the state goes, on one fixed batch read with the noise off."""
     x, y, _, fa, _, _, lengths = batch
@@ -61,7 +86,25 @@ def activity_change(start, end, batch):
     s = torch.linalg.svdvals(dh - dh.mean(0))
     dw = (end.W_rec - start.W_rec).detach()
     sv = torch.linalg.svdvals(dw) ** 2
-    return dict(potent_share=round(potent / max(total, 1e-12), 5),
+    # a representational target can move the operating point by scaling the state rather than by
+    # aiming it: the mean shift of the unnormalised logit is in the units of the swept offset, and
+    # the norm ratio says whether the population as a whole got louder or quieter
+    gain = float(h1[valid].norm(dim=-1).mean() / h0[valid].norm(dim=-1).mean())
+    # the part of the logit shift a uniform rescaling of the old state would have produced
+    p0, p1 = passage(start, batch), passage(end, batch)
+    # the offset that sits halfway between where the hold and the response window peak moves by
+    # minus the mean of the two peaks' shifts; the level and the spread say which one moved them
+    return dict(passage_offset=round(-((p1["hold_max"] - p0["hold_max"])
+                                       + (p1["resp_max"] - p0["resp_max"])) / 2, 5),
+                d_hold_level=round(p1["level"] - p0["level"], 5),
+                d_hold_sd=round(p1["sd"] - p0["sd"], 5),
+                d_hold_max=round(p1["hold_max"] - p0["hold_max"], 5),
+                d_resp_max=round(p1["resp_max"] - p0["resp_max"], 5),
+                hold_z=round(p0["z"], 3),
+                logit_shift=round(float((dh @ w).mean()), 5),
+                norm_ratio=round(gain, 4),
+                gain_part=round((gain - 1) * float((h0[valid] @ w).mean()), 5),
+                potent_share=round(potent / max(total, 1e-12), 5),
                 potent_over_random=round(potent / max(total, 1e-12) * dh.shape[1], 3),
                 criterion_along_axis=round(float((along[sig].mean() + along[noise].mean()) / 2), 5),
                 separation_along_axis=round(float(along[sig].mean() - along[noise].mean()), 5),
@@ -95,6 +138,10 @@ def main():
                          **activity_change(start, end, batch)))
         print(f"  [net {a.net} {stem}] {rows[-1]}", flush=True)
         if cond not in SWEPT or "_fa" in stem:
+            # the end point only, so every run's threshold shift can be set against its logit shift
+            s = sweep(end, a.select_n, a.report_n)
+            rows.append(dict(net=a.net, run=stem, cond=cond, kind="sweep", upd=1200,
+                             best_d=s["d"], offset=s["offset"], auc=s["auc"]))
             continue
         for path in sorted(glob.glob(str(CKPT / a.ckpt_dir / f"{stem}_u*.pt")),
                            key=lambda q: int(q.rsplit("_u", 1)[1][:-3])):
@@ -112,7 +159,8 @@ def main():
                              best_d=s["d"], offset=s["offset"], auc=s["auc"],
                              payoff_offset=behaviour.payoff_optimal(s["roc"])[0]))
     runs.write(a.out, rows, ["net", "run", "cond", "kind", "upd", "best_d", "offset", "auc",
-                             "payoff_offset", "potent_share", "potent_over_random",
+                             "payoff_offset", "passage_offset", "d_hold_level", "d_hold_sd", "d_hold_max", "d_resp_max", "hold_z",
+                             "logit_shift", "norm_ratio", "gain_part", "potent_share", "potent_over_random",
                              "criterion_along_axis", "separation_along_axis", "top_pc_share",
                              "dw_rank"])
 

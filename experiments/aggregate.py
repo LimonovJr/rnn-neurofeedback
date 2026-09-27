@@ -612,10 +612,14 @@ def share(args):
               f"{np.mean([frac(best, n) for n in nets]):>+16.2f}{mean:>+12.3f}{p:>8.3f}")
 
 
-def swept(args, task="c1"):
-    """Every run of a task that recorded the threshold sweep at both ends."""
+def swept(args, task="c1", decoder="trained", entropy=0.05):
+    """Every run of a task that recorded the threshold sweep at both ends, through the decoder that
+    was trained with the network (or the refitted one) and at one entropy bonus of the reward."""
+    refit = decoder == "refit"
     return [r for r in runs.read(f"{args.results}/nf_{task}_*_net*.csv")
-            if r.get("crit_d_end") and r.get("crit_d_start")]
+            if r.get("crit_d_end") and r.get("crit_d_start")
+            and bool(int(r.get("refit_decoder") or 0)) == refit
+            and float(r.get("entropy") or 0.05) == entropy]
 
 
 def per_net(rows, value):
@@ -810,6 +814,117 @@ def readout(args):
               f"{sum(v <= -0.5 for v in sampled.values()):>7d}/{n}")
 
 
+ARMS = ("reward", "control", "control_fa", "joint", "k2", "shuffled")
+
+
+def arm(run):
+    return next(v for k, v in (("control_fa", "control_fa"), ("_shuf", "shuffled"), ("_k2_", "k2"),
+                               ("joint", "joint"), ("reward", "reward"), ("control", "control"))
+                if k in run)
+
+
+def stepwise(args):
+    """Blocks 33-34 on the saved c1 states: discriminability before saturation (K1), the
+    payoff-optimal threshold with the noise left on (K2), the shape and place of the change (K5, K6),
+    and what moves each run's best threshold."""
+    rows = runs.read(f"{args.results}/stepwise_c1_net*.csv")
+    sweeps = [r for r in rows if r["kind"] == "sweep"]
+    print("K1  update  reward  control    diff  range                p   AUC diff")
+    for upd in sorted({int(r["upd"]) for r in sweeps}):
+        at = [r for r in sweeps if int(r["upd"]) == upd]
+        d, auc = ({a: per_net([r for r in at if arm(r["run"]) == a], lambda r: float(r[key]))
+                   for a in ("reward", "control")} for key in ("best_d", "auc"))
+        nets = sorted(set(d["reward"]) & set(d["control"]))
+        diff = [d["reward"][n] - d["control"][n] for n in nets]
+        print(f"    {upd:>6}  {np.mean([d['reward'][n] for n in nets]):.3f}   "
+              f"{np.mean([d['control'][n] for n in nets]):.3f}  {np.mean(diff):+.3f}  "
+              f"[{min(diff):+.3f}, {max(diff):+.3f}]  {stats.one_sample(diff)[2]:.3f}  "
+              f"{np.mean([auc['reward'][n] - auc['control'][n] for n in nets]):+.4f}")
+    print("\nK2  payoff-optimal offset at the end, recurrent noise on")
+    for a in ("reward", "control"):
+        g, s_ = (per_net([r for r in rows if r["kind"] == k and arm(r["run"]) == a],
+                         lambda r: float(r["payoff_offset"]))
+                 for k in ("noise_greedy", "noise_sampled"))
+        print(f"    {a:<9} greedy {np.mean(list(g.values())):+.2f}  sampled "
+              f"{np.mean(list(s_.values())):+.2f}  sampled in +-0.5 "
+              f"{sum(abs(v) <= 0.5 for v in s_.values())}/{len(s_)}")
+    act = [r for r in rows if r["kind"] == "activity"]
+    start = per_net([r for r in sweeps if int(r["upd"]) == 0], lambda r: float(r["offset"]))
+    end = {r["run"]: float(r["offset"]) for r in sweeps if int(r["upd"]) == 1200}
+    for r in act:
+        r["d_offset"] = end[r["run"]] - start[int(r["net"])]
+    print("\nK5, K6 and the threshold, network means\n    " + " " * 22 +
+          "".join(f"{a:>11}" for a in ARMS))
+    for c in ("dw_rank", "top_pc_share", "potent_over_random", "criterion_along_axis",
+              "separation_along_axis", "norm_ratio", "logit_shift", "d_hold_level", "d_hold_sd",
+              "d_resp_max", "passage_offset", "d_offset"):
+        print(f"    {c:<22}" + "".join(
+            f"{np.mean([float(r[c]) for r in act if arm(r['run']) == a]):>11.3f}" for a in ARMS))
+    print(f"\n    best-threshold shift against its predictors, {len(act)} runs (slopes, R2):")
+    for xs in (("logit_shift",), ("passage_offset",), ("d_hold_level", "d_hold_sd")):
+        for label, sel in (("all", act), ("without reward", [r for r in act
+                                                             if arm(r["run"]) != "reward"])):
+            X = np.column_stack([np.ones(len(sel))] + [[float(r[c]) for r in sel] for c in xs])
+            t = np.array([r["d_offset"] for r in sel])
+            b = np.linalg.lstsq(X, t, rcond=None)[0]
+            r2 = 1 - ((t - X @ b) ** 2).sum() / ((t - t.mean()) ** 2).sum()
+            print(f"    {' + '.join(xs):<26}{label:<16}" + " ".join(f"{v:+.2f}" for v in b[1:]) +
+                  f"   R2 {r2:.2f}")
+
+
+def refit(args):
+    """Block 35: reward against supervision through a decoder refitted on the frozen state (K4)."""
+    rows = swept(args, decoder="refit")
+    print("measure              reward  control    diff   >0       p")
+    for name, value in (("own-threshold d'", lambda r: curve(r)[1][-1]),
+                        ("best-threshold d'", lambda r: float(r["crit_d_end"])),
+                        ("AUC", lambda r: float(r["auc_end"])),
+                        ("best offset", lambda r: float(r["crit_offset_end"])),
+                        ("payoff-optimal", lambda r: behaviour.payoff_optimal(r["roc_end"])[0])):
+        a = per_net([r for r in rows if r["cond"] == "reward"], value)
+        b = per_net([r for r in rows if r["cond"] == "control"], value)
+        diff = [a[n] - b[n] for n in sorted(set(a) & set(b))]
+        print(f"{name:<20}{np.mean(list(a.values())):>7.3f}{np.mean(list(b.values())):>9.3f}"
+              f"{np.mean(diff):>+8.3f}{sum(d > 0 for d in diff):>3d}/{len(diff)}"
+              f"{stats.one_sample(diff)[2]:>8.4f}")
+
+
+def entropy(args):
+    """Block 36: the reward learner's operating point at entropy bonus 0 and 0.01 (K3); 0.05 is
+    block 31."""
+    print("bonus   n   own d'  best d'    AUC  greedy payoff  sampled payoff  sampled in +-1")
+    for ent in (0.0, 0.01, 0.05):
+        sel = [r for r in swept(args, entropy=ent) if r["cond"] == "reward"
+               and r.get("roc_end_sampled") and (r.get("fa_cost") or "1") == "1"]
+        if not sel:
+            continue
+        g = per_net(sel, lambda r: behaviour.payoff_optimal(r["roc_end"])[0])
+        s_ = per_net(sel, lambda r: behaviour.payoff_optimal(r["roc_end_sampled"])[0])
+        mean = lambda f: np.mean(list(per_net(sel, f).values()))
+        print(f"{ent:<6g}{len(g):>3}{mean(lambda r: curve(r)[1][-1]):>8.3f}"
+              f"{mean(lambda r: float(r['crit_d_end'])):>9.3f}"
+              f"{mean(lambda r: float(r['auc_end'])):>7.3f}"
+              f"{np.mean(list(g.values())):>+15.2f}{np.mean(list(s_.values())):>+16.2f}"
+              f"{sum(abs(v) <= 1 for v in s_.values()):>14d}/{len(s_)}")
+
+
+def clamp_precheck(args):
+    """How much of each signal's step on the context task moves the criterion, at the start and at
+    the saved end points, and whether two independent halves of the gradient agree."""
+    rows = runs.read(f"{args.results}/criterion_share_context_net*.csv")
+    where = lambda r: "start" if r["state"] == "start" else r["state"].split("_net")[0] + " end"
+    print("state          signal   criterion separation      share halves cos  sign agreement")
+    for w in ("start", "control end", "reward end"):
+        for sig in ("reward", "control"):
+            sel = [r for r in rows if where(r) == w and r["signal"] == sig]
+            agree = np.mean([h.split("/")[0][0] == h.split("/")[1][0]
+                             for h in (r["halves_criterion"] for r in sel)])
+            print(f"{w:<15}{sig:<9}" + "".join(
+                f"{np.mean([float(r[c]) for r in sel]):>+11.3f}"
+                for c in ("criterion", "separation", "criterion_share", "halves_cos")) +
+                f"{agree:>12.1f}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -817,7 +932,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "representation": representation, "gradients": gradients,
           "projection": projection, "movement": movement, "retention": retention,
           "share": share, "equivalence": equivalence, "criterion": criterion,
-          "components": components, "axis": axis, "batch2": batch2, "readout": readout}
+          "components": components, "axis": axis, "batch2": batch2, "readout": readout,
+          "stepwise": stepwise, "refit": refit, "entropy": entropy, "clamp-precheck": clamp_precheck}
 
 
 def main():
