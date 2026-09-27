@@ -146,6 +146,13 @@ def run(a):
         if a.adapt_decoder and upd and upd % a.adapt_decoder == 0:
             adapt_decoder(m, env_fn, a.adapt_steps, a.adapt_lr)
 
+    tracker = None
+    if a.track:
+        assert a.cond == "reward", "the threshold is tracked for the reward learner"
+        tracker = dict(mode=a.track, rate=a.track_rate, every=a.track_every, step=a.track_step)
+        if a.track == "yoke":
+            tracker["path"] = runs.split(runs.read(a.yoke)[0]["offset_traj"])
+
     print(f"[nf {a.task} {a.cond} net{a.net} r{a.rep}] {a.updates} updates, lr={a.lr}, "
           f"lam={a.lam:g}, target={a.target}, anchor={a.anchor:g}, rule={a.rule}", flush=True)
     clipped = ""
@@ -160,8 +167,16 @@ def run(a):
                       xy_from=a.target, anchor=a.anchor, kappa=a.kappa, shuffle=a.shuffle,
                       optimizer=a.optimizer, fa_cost=a.fa_cost, fa_penalty=a.fa_penalty,
                       operant_reward=a.operant_reward, axis=target,
-                      axis_increment=a.axis_increment, entropy=a.entropy)
+                      axis_increment=a.axis_increment, entropy=a.entropy, tracker=tracker,
+                      baseline=a.baseline, batch=a.batch, temperature=a.temperature)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
+        if tracker:
+            late = history["imbalance"][-len(history["imbalance"]) // 4:]
+            crit.update(offset_traj=runs.joined(history["offset"]),
+                        imbalance_traj=runs.joined(history["imbalance"]),
+                        hit_rate_traj=runs.joined(history["hit_rate"]),
+                        abort_traj=runs.joined(history["abort_rate"]),
+                        imbalance_late=round(float(np.mean(np.abs(late))), 4))
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
     # from one that asked for nothing
@@ -224,6 +239,9 @@ def run(a):
                            rule=a.rule, explore=f"{a.explore:g}", explore_k=a.explore_k,
                            rec_noise_scale=f"{a.rec_noise_scale:g}", optimizer=a.optimizer,
                            refit_decoder=a.refit_decoder, entropy=f"{a.entropy:g}",
+                           track=a.track or "", track_rate=f"{a.track_rate:g}" if a.track == "rate"
+                           else "", yoke_from=os.path.basename(a.yoke) if a.yoke else "",
+                           baseline=a.baseline, batch=a.batch, temperature=f"{a.temperature:g}",
                            save_at=runs.joined(sorted(a.save_at)),
                            fa_cost=f"{a.fa_cost:g}", fa_penalty=f"{a.fa_penalty:g}"
                            if a.fa_penalty is not None else "", operant_reward=a.operant_reward,
@@ -235,6 +253,9 @@ def run(a):
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "optimizer", "clipped", "refit_decoder", "entropy",
+                "track", "track_rate", "yoke_from", "baseline", "batch", "temperature",
+                "imbalance_late",
+                "offset_traj", "imbalance_traj", "hit_rate_traj", "abort_traj",
                 "save_at", "all_trials", "d0",
                 "kl_task", "pretrain_start", "pretrain_end", "patch_start", "patch_end",
                 "fa_cost", "fa_penalty", "operant_reward", "cosine", "axis_increment",
@@ -297,6 +318,21 @@ def main():
     p.add_argument("--refit-decoder", type=int, default=0,
                    help="replace the decision read-out by a fresh one fitted on the frozen state for "
                         "this many read-out-only updates, as a calibration session would")
+    p.add_argument("--track", choices=["balance", "rate", "yoke"],
+                   help="move the frozen decoder's release bias during a reward run, as an "
+                        "adaptive-threshold protocol would: to c = 0, to a hit rate, or along "
+                        "another run's trajectory (--yoke)")
+    p.add_argument("--track-rate", type=float, default=0.7, help="the hit rate --track rate holds")
+    p.add_argument("--track-every", type=int, default=10,
+                   help="updates of sampled training trials pooled per threshold move")
+    p.add_argument("--track-step", type=float, default=2.0,
+                   help="offset moved per unit of rate error")
+    p.add_argument("--yoke", help="CSV of a tracked run whose offset trajectory to replay")
+    p.add_argument("--baseline", choices=["batch", "type"], default="batch",
+                   help="the reward's baseline: the batch mean, or each trial type's own mean")
+    p.add_argument("--batch", type=int, default=signals.BATCH, help="trials per reward update")
+    p.add_argument("--temperature", type=float, default=1.0,
+                   help="divide the reward policy's logits by this while training")
     p.add_argument("--entropy", type=float, default=signals.ENTROPY,
                    help="weight of the reward signal's entropy bonus")
     p.add_argument("--axis-increment", type=float,
@@ -335,6 +371,8 @@ def main():
     a.save_at = {int(u) for u in a.save_at.split(",") if u}
     if a.save_at and not a.ckpt_dir:
         p.error("--save-at needs --ckpt-dir")
+    if (a.track == "yoke") != bool(a.yoke):
+        p.error("--track yoke and --yoke go together")
     # every knob that changes what a run measures goes into its name, or a new condition would
     # collide with an old result and be skipped as already done
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
@@ -352,6 +390,12 @@ def main():
            + ("_samp" if a.sampled_sweep else "")
            + (f"_refit{a.refit_decoder}" if a.refit_decoder else "")
            + (f"_ent{a.entropy:g}" if a.entropy != signals.ENTROPY else "")
+           + (f"_track{a.track_rate:g}" if a.track == "rate" else "")
+           + ("_balance" if a.track == "balance" else "")
+           + (f"_yoke{runs.read(a.yoke)[0]['net']}" if a.yoke else "")
+           + ("_typebase" if a.baseline == "type" else "")
+           + (f"_b{a.batch}" if a.batch != signals.BATCH else "")
+           + (f"_T{a.temperature:g}" if a.temperature != 1.0 else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

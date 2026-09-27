@@ -317,7 +317,14 @@ def published(r, target="target"):
             and float(r.get("rec_noise_scale") or 1) == 1 and not r.get("crit_d_end")
             and not r.get("save_at") and not int(r.get("refit_decoder") or 0)
             and float(r.get("entropy") or 0.05) == 0.05
-            and not r.get("kl_task"))
+            and not r.get("kl_task") and not variant(r))
+
+
+def variant(r):
+    """A run whose reward learner had its threshold moved, its baseline changed or its batch
+    enlarged: none of the published tables pools these."""
+    return bool(r.get("track") or r.get("yoke_from")) or (r.get("baseline") or "batch") != "batch" \
+        or int(r.get("batch") or 48) != 48 or float(r.get("temperature") or 1) != 1
 
 
 def levels(rows, reps, k=6):
@@ -619,7 +626,7 @@ def swept(args, task="c1", decoder="trained", entropy=0.05):
     return [r for r in runs.read(f"{args.results}/nf_{task}_*_net*.csv")
             if r.get("crit_d_end") and r.get("crit_d_start")
             and bool(int(r.get("refit_decoder") or 0)) == refit
-            and float(r.get("entropy") or 0.05) == entropy]
+            and float(r.get("entropy") or 0.05) == entropy and not variant(r)]
 
 
 def per_net(rows, value):

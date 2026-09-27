@@ -50,14 +50,16 @@ ENTROPY = 0.05
 def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, eval_every=None,
           hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
           optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
-          axis_increment=None, entropy=ENTROPY):
+          axis_increment=None, entropy=ENTROPY, tracker=None, baseline="batch", batch=BATCH,
+          temperature=1.0):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
     lr = LR[cond] if lr is None else lr
     if cond == "reward":
         return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor,
-                         optimizer=optimizer, fa_cost=fa_cost, entropy=entropy)
+                         optimizer=optimizer, fa_cost=fa_cost, entropy=entropy, tracker=tracker,
+                         baseline=baseline, batch=batch, temperature=temperature)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
@@ -266,9 +268,11 @@ def loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, de
     return dict(history)
 
 
-def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0):
+def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0, groups=None):
     """REINFORCE on a sampled release time. Hit and correct rejection are +1, a false alarm
-    -fa_cost, miss and abort -1, with the advantage normalised within the batch."""
+    -fa_cost, miss and abort -1, with the advantage normalised within the batch. With `groups`
+    (one label per trial) the baseline is each trial type's own mean reward instead of the batch's,
+    which takes out the variance that only says which kind of trial it was."""
     logp_hold, logp_release = logp[..., 0], logp[..., 1]
     b, t = logp_release.shape
     device = logp.device
@@ -289,7 +293,13 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0):
         reward = torch.where(correct, torch.ones(b, device=device),
                              torch.where(false_alarm, -fa_cost * torch.ones(b, device=device),
                                          -torch.ones(b, device=device)))
-        adv = (reward - reward.mean()) / (reward.std() + 1e-6)
+        if groups is None:
+            adv = (reward - reward.mean()) / (reward.std() + 1e-6)
+        else:
+            centred = reward.clone()
+            for g in groups.unique():
+                centred[groups == g] -= reward[groups == g].mean()
+            adv = centred / (centred.std() + 1e-6)
 
     before = (steps < first[:, None]) & valid
     logpi = (logp_hold * before).sum(1)
@@ -301,27 +311,76 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0):
     stats = {"reward": reward.mean(), "frac_correct": correct.float().mean(),
              "hit": hit.float().mean(), "false_alarm": false_alarm.float().mean(),
              "miss": ((~did_release) & has_target).float().mean(),
-             "correct_rejection": correct_rejection.float().mean()}
+             "correct_rejection": correct_rejection.float().mean(),
+             **window_counts(first, target, fa, hit, false_alarm)}
     return loss, stats
 
 
+def window_counts(first, target, fa, hit, false_alarm):
+    """Go and no-go trials that reached the response window without releasing first. Over all
+    trials, hits and false alarms both fall at the liberal end, where releases turn into aborts, so
+    hit rate = 1 - false-alarm rate is crossed twice or not at all; among the trials that reached
+    the window both rates rise with the offset and the crossing is unique."""
+    window = target | fa
+    start = window.float().argmax(1)
+    reached = window.any(1) & (first >= start)
+    go = target.any(1)
+    return {"n_go": (go & reached).float().sum(), "n_hit": hit.float().sum(),
+            "n_nogo": (~go & reached).float().sum(), "n_fa": false_alarm.float().sum(),
+            "n_abort": (window.any(1) & ~reached).float().sum(),
+            "n_trials": torch.tensor(float(len(first)))}
+
+
+def track(model, tracker, bias0, counts, upd):
+    """Move the frozen decoder's release bias the way an adaptive-threshold protocol does, from the
+    learner's own sampled trials of the last few updates, with the recurrent noise on as in
+    training: toward hit rate = 1 - false-alarm rate among the trials that reached the response
+    window ("balance", c = 0, defined at any d'), toward a target hit rate among them ("rate"), or
+    along another run's recorded trajectory ("yoke"), which moves the threshold without it
+    following this network."""
+    hit = counts["n_hit"] / max(counts["n_go"], 1.0)
+    fa = counts["n_fa"] / max(counts["n_nogo"], 1.0)
+    offset = float(model.b_out[1]) - bias0
+    if tracker["mode"] == "yoke":
+        path = tracker["path"]
+        offset = path[min(upd // tracker["every"], len(path)) - 1]
+    elif counts["n_go"] + counts["n_nogo"] == 0:
+        pass                                     # nothing reached the window: no rate to follow
+    elif tracker["mode"] == "balance":
+        offset -= tracker["step"] * (hit + fa - 1.0)
+    else:
+        offset -= tracker["step"] * (hit - tracker["rate"])
+    with torch.no_grad():
+        model.b_out[1] = bias0 + offset
+    return offset, hit, fa
+
+
 def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, grad_clip=5.0,
-              log_every=50, optimizer="adam", fa_cost=1.0, entropy=ENTROPY):
+              log_every=50, optimizer="adam", fa_cost=1.0, entropy=ENTROPY, tracker=None,
+              baseline="batch", batch=BATCH, temperature=1.0):
+    """`temperature` divides the logits of the policy that is sampled and credited, not of the
+    decoder that is scored: it keeps releases stochastic, and so the gradient alive, without
+    touching where the greedy threshold sits."""
     for p in (model.W_aux, model.b_aux, model.W_out, model.b_out):
         p.requires_grad_(False)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = OPTIMISERS[optimizer](params, lr=lr)
     w_rec0 = model.W_rec.detach().clone()
+    bias0 = float(model.b_out[1])
+    counts = defaultdict(float)
 
     history = defaultdict(list)
     if hook is not None and eval_every:
         hook(model, 0)
     for upd in range(1, updates + 1):
         model.train()
-        x, target, fa, valid = outcome_batch(env_fn, BATCH, device)
+        x, target, fa, valid, kinds = outcome_batch(env_fn, batch, device, kinds=True)
         logits, _, _ = model(x, return_hidden=True)
+        if temperature != 1.0:
+            logits = logits / temperature
         loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid,
-                                  ent_coef=entropy, fa_cost=fa_cost)
+                                  ent_coef=entropy, fa_cost=fa_cost,
+                                  groups=kinds if baseline == "type" else None)
         if anchor:
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()
@@ -332,7 +391,17 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
         opt.step()
 
         for k, v in stats.items():
-            history[k].append(v.item())
+            if k.startswith("n_"):
+                counts[k] += v.item()
+            else:
+                history[k].append(v.item())
+        if tracker and upd % tracker["every"] == 0:
+            offset, hit, fa_rate = track(model, tracker, bias0, counts, upd)
+            history["offset"].append(round(offset, 4))
+            history["imbalance"].append(round(hit + fa_rate - 1.0, 4))
+            history["hit_rate"].append(round(hit, 4))
+            history["abort_rate"].append(round(counts["n_abort"] / max(counts["n_trials"], 1.0), 4))
+            counts.clear()
         if upd % log_every == 0 or upd == 1:
             print(f"upd {upd:5d}  reward={history['reward'][-1]:+.3f}  "
                   f"hit={history['hit'][-1]:.3f} fa={history['false_alarm'][-1]:.3f} "
@@ -346,13 +415,17 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
     return dict(history)
 
 
-def outcome_batch(env_fn, batch_size, device):
-    """Padded observations plus the masks that turn a chosen release time into an outcome."""
-    xs, targets, fas, lens = [], [], [], []
+def outcome_batch(env_fn, batch_size, device, kinds=False):
+    """Padded observations plus the masks that turn a chosen release time into an outcome, and with
+    `kinds` each trial's type: context and match where the task has them, otherwise whether it
+    carried distractors."""
+    xs, targets, fas, lens, types = [], [], [], [], []
     for _ in range(batch_size):
         env = env_fn()
         env.reset()
         gt = env.gt
+        t = env.trial
+        types.append(2 * int(t.get("context", 0)) + int(t.get("is_match", t.get("has_distractors", 0))))
         fa = np.zeros(len(gt), dtype=bool)
         for e in env._distractor_events:
             fa[e["fa_start"]:e["fa_end"]] = True
@@ -372,4 +445,5 @@ def outcome_batch(env_fn, batch_size, device):
     valid = torch.zeros(batch_size, t_max, dtype=torch.bool, device=device)
     for i, n in enumerate(lens):
         valid[i, :n] = True
-    return pad(xs, 0.0, np.float32), pad(targets, False, bool), pad(fas, False, bool), valid
+    out = pad(xs, 0.0, np.float32), pad(targets, False, bool), pad(fas, False, bool), valid
+    return out + (torch.tensor(types, device=device),) if kinds else out

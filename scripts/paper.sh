@@ -687,6 +687,95 @@ block36() {
     wait
 }
 
+# 37. The reward learner on the context task with its decision threshold moved the way an
+#     adaptive-threshold protocol moves it, from the learner's own sampled training trials with the
+#     noise on: held at c = 0 among the trials that reach the response window, held at a hit rate of
+#     0.7 among them, or replayed from another network's clamped run (yoked: the threshold moves but
+#     does not follow this network). Against the same learner at a fixed threshold and supervision.
+#     States kept at 0, 2000, 4000 and 8000 updates for the step split (block 37e).
+B37="--task context --rep 9 --criterion --save-at 0,2000,4000,8000 --ckpt-dir nf_context_b37"
+TRACK="--track-step 1 --track-every 25"
+block37() {
+    for net in $NETS; do
+        run "b37_balance_net$net" -m experiments.nf $B37 --cond reward --net $net \
+            --track balance $TRACK
+    done
+    for net in $NETS; do
+        run "b37_rate_net$net" -m experiments.nf $B37 --cond reward --net $net \
+            --track rate --track-rate 0.7 $TRACK
+        run "b37_fixed_net$net" -m experiments.nf $B37 --cond reward --net $net
+        run "b37_control_net$net" -m experiments.nf $B37 --cond control --net $net
+    done
+    wait
+    for net in $NETS; do
+        src=$(( (net + 1) % 5 ))
+        run "b37_yoke_net$net" -m experiments.nf $B37 --cond reward --net $net --track yoke \
+            --track-every 25 --yoke "$(ls results/nf_context_reward_*_balance_net${src}_r9.csv)"
+    done
+    wait
+}
+
+block37e() {
+    for net in $NETS; do
+        run "b37_split_net$net" -m experiments.criterion_share --net $net \
+            --ckpt-dir nf_context_b37 --pattern "nf_context_*_net{net}_r9_u[248]000.pt" \
+            --out results/criterion_share_b37_net$net.csv
+    done
+    wait
+}
+
+# 38. Is the reward learner's deficit on the context task the variance of its gradient estimate?
+#     The same learner with each trial type's own mean reward as the baseline, and with four times
+#     the batch.
+block38() {
+    for net in $NETS; do
+        run "b38_typebase_net$net" -m experiments.nf $B37 --cond reward --net $net --baseline type
+        run "b38_batch192_net$net" -m experiments.nf $B37 --cond reward --net $net --batch 192
+    done
+    wait
+}
+
+# 39. The reward learners at false-alarm cost 1, 2 and 4 again, keeping the end state, so they can
+#     be read the way they learn (39e: noise on, sampled releases) and the payoff-optimal threshold
+#     set against the cost each one was trained with.
+block39() {
+    for net in $NETS; do for cost in 1 2 4; do
+        run "b39_fac${cost}_net$net" -m experiments.nf --task c1 --cond reward --net $net \
+            --rep 10 --fa-cost $cost --eval-n 10000 --criterion --save-at 1200 \
+            --ckpt-dir nf_c1_cost
+    done; done
+    wait
+}
+
+block39e() {
+    run "b39_calibration" -m experiments.calibration --ckpt-dir nf_c1_cost
+    wait
+}
+
+# 40. The first-passage account of the threshold on networks it was not fitted on: reward,
+#     supervision, the magnified and the shuffled target on networks 10-24, states kept at 0 and
+#     1200 updates, read by 40e as block 34 read networks 0-4.
+block40() {
+    for net in $BATCH2; do
+        run "b40_reward_net$net" -m experiments.nf --task c1 --cond reward --net $net --rep 6 \
+            --eval-n 10000 --save-at 0,1200 --ckpt-dir nf_c1_steps
+        run "b40_control_net$net" -m experiments.nf --task c1 --cond control --net $net --rep 6 \
+            --lr 1e-4 --eval-n 10000 --save-at 0,1200 --ckpt-dir nf_c1_steps
+        run "b40_k2_net$net" -m experiments.nf --task c1 --cond expand --kappa 2 --net $net \
+            --rep 6 --lr 1e-4 --eval-n 10000 --save-at 0,1200 --ckpt-dir nf_c1_steps
+        run "b40_shuf_net$net" -m experiments.nf --task c1 --cond expand --kappa 1 --shuffle \
+            --net $net --rep 6 --lr 1e-4 --eval-n 10000 --save-at 0,1200 --ckpt-dir nf_c1_steps
+    done
+    wait
+}
+
+block40e() {
+    for net in $BATCH2; do
+        run "b40_stepwise_net$net" -m experiments.stepwise --net $net
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

@@ -77,6 +77,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--net", type=int, required=True)
     p.add_argument("--length", type=float, default=0.003)
+    p.add_argument("--ckpt-dir", default="nf_context")
+    p.add_argument("--pattern", default="{cond}_net{net}_r*_u8000.pt",
+                   help="saved states to split, with {net} and optionally {cond} filled in")
     p.add_argument("--out")
     a = p.parse_args()
     a.out = a.out or f"results/criterion_share_context_net{a.net}.csv"
@@ -86,10 +89,9 @@ def main():
     torch.manual_seed(7)
     np.random.seed(7)
     held = [trials.batch(ENV, BATCH, 20, window_ms=signals.WINDOW_MS) for _ in range(N_HELD)]
-    states = [("start", None)] + [
-        (os.path.basename(f)[:-3], f)
-        for cond in ("reward", "control")
-        for f in sorted(glob.glob(str(CKPT / "nf_context" / f"{cond}_net{a.net}_r*_u8000.pt")))]
+    found = sorted({f for cond in ("reward", "control") for f in glob.glob(
+        str(CKPT / a.ckpt_dir / a.pattern.format(net=a.net, cond=cond)))})
+    states = [("start", None)] + [(os.path.basename(f)[:-3], f) for f in found]
     rows = []
     for state, path in states:
         model = restore(a.net, path)
