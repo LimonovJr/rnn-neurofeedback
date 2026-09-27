@@ -303,28 +303,62 @@ def nf_c1(args):
 
 
 BUDGET = {"c1": 1200, "context": 8000}
+EVAL_N = {"c1": 1000, "context": 10000}
+
+# Every column a run writes says what the run is, what it measured, or how it was run. The last
+# kind is compared against its default, and a column that is in none of these lists counts as a
+# changed protocol: a knob added later keeps its runs out of every table until a table names it.
+IDENTITY = {"task", "cond", "net", "rep", "_file"}
+OUTCOMES = {"d0", "clipped", "kl_task", "crossnobis", "pr", "crossnobis_start", "pr_start",
+            "axis_in_manifold", "imbalance_late"}
+OUTCOME_PREFIXES = ("pretrain_", "patch_", "axis_auc_", "axis_m_", "crit_", "auc_", "roc_", "dW_",
+                    "curve_", "offset_traj", "imbalance_traj", "hit_rate_traj", "abort_traj")
+DEFAULTS = {"lam": "1", "updates": lambda r: BUDGET[r["task"]], "lr": lambda r: LR[r["cond"]],
+            "eval_n": lambda r: EVAL_N[r["task"]], "train_decoder": "0", "target": "target",
+            "anchor": "0", "kappa": "1.5", "shuffle": "0", "adapt_decoder": "0", "rule": "bptt",
+            "explore": "1", "explore_k": "0", "rec_noise_scale": "1", "optimizer": "adam",
+            "all_trials": "0", "fa_cost": "1", "fa_penalty": "", "operant_reward": "position",
+            "cosine": "", "axis_increment": "", "refit_decoder": "0", "entropy": "0.05",
+            "save_at": "", "track": "", "track_rate": "", "yoke_from": "", "baseline": "batch",
+            "batch": "48", "temperature": "1"}
+# what the published tables were built from, and may pool
+PUBLISHED = {"lam", "eval_n", "train_decoder", "kappa", "shuffle", "explore", "explore_k",
+             "optimizer", "all_trials", "fa_cost", "fa_penalty", "operant_reward", "cosine",
+             "axis_increment", "target"}
+SWEPT = PUBLISHED | {"updates", "lr", "anchor", "adapt_decoder", "rule", "rec_noise_scale"}
+
+
+def same(value, default):
+    if value in ("", None):
+        return True
+    try:
+        return float(value) == float(default)
+    except (TypeError, ValueError):
+        return str(value) == str(default)
+
+
+def protocol(r):
+    """The knobs a run changed from their defaults."""
+    out = set()
+    for k, v in r.items():
+        if k in IDENTITY or k in OUTCOMES or k.startswith(OUTCOME_PREFIXES):
+            continue
+        default = DEFAULTS.get(k)
+        if default is None:
+            if v not in ("", None):
+                out.add(k)
+        elif not same(v, default(r) if callable(default) else default):
+            out.add(k)
+    return out
 
 
 def published(r, target="target"):
     """The registered protocol: the stimulus target, no anchor, no decoder co-adaptation,
-    back-propagation, the condition's own learning rate, the full budget. Later runs share the file pattern and vary one of these;
-    the repeats run for other questions (weight movement, retention) are left out too, so the
-    published tables stay what they were."""
-    return (int(r["updates"]) == BUDGET[r["task"]] and float(r["lr"]) == LR[r["cond"]]
-            and r.get("target") in (target, "", None)
-            and float(r.get("anchor") or 0) == 0 and not int(r.get("adapt_decoder") or 0)
-            and r.get("rule") in ("bptt", "", None) and "_move_" not in r["_file"]
-            and float(r.get("rec_noise_scale") or 1) == 1 and not r.get("crit_d_end")
-            and not r.get("save_at") and not int(r.get("refit_decoder") or 0)
-            and float(r.get("entropy") or 0.05) == 0.05
-            and not r.get("kl_task") and not variant(r))
-
-
-def variant(r):
-    """A run whose reward learner had its threshold moved, its baseline changed or its batch
-    enlarged: none of the published tables pools these."""
-    return bool(r.get("track") or r.get("yoke_from")) or (r.get("baseline") or "batch") != "batch" \
-        or int(r.get("batch") or 48) != 48 or float(r.get("temperature") or 1) != 1
+    back-propagation, the condition's own learning rate, the full budget, and nothing a later
+    block varied. The repeats run for other questions (swept thresholds, weight movement,
+    retention) are left out too, so the published tables stay what they were."""
+    return (protocol(r) <= PUBLISHED and r.get("target") in (target, "", None)
+            and "_move_" not in r["_file"] and not r.get("crit_d_end") and not r.get("kl_task"))
 
 
 def levels(rows, reps, k=6):
@@ -619,14 +653,13 @@ def share(args):
               f"{np.mean([frac(best, n) for n in nets]):>+16.2f}{mean:>+12.3f}{p:>8.3f}")
 
 
-def swept(args, task="c1", decoder="trained", entropy=0.05):
-    """Every run of a task that recorded the threshold sweep at both ends, through the decoder that
-    was trained with the network (or the refitted one) and at one entropy bonus of the reward."""
-    refit = decoder == "refit"
+def swept(args, task="c1", also=(), where=None):
+    """Every run of a task that recorded the threshold sweep at both ends and changed nothing
+    beyond what the threshold tables pool, plus the knobs in `also`, filtered by `where`."""
+    allowed = SWEPT | set(also)
     return [r for r in runs.read(f"{args.results}/nf_{task}_*_net*.csv")
-            if r.get("crit_d_end") and r.get("crit_d_start")
-            and bool(int(r.get("refit_decoder") or 0)) == refit
-            and float(r.get("entropy") or 0.05) == entropy and not variant(r)]
+            if r.get("crit_d_end") and r.get("crit_d_start") and protocol(r) <= allowed
+            and (where is None or where(r))]
 
 
 def per_net(rows, value):
@@ -881,7 +914,7 @@ def stepwise(args):
 
 def refit(args):
     """Block 35: reward against supervision through a decoder refitted on the frozen state (K4)."""
-    rows = swept(args, decoder="refit")
+    rows = swept(args, also={"refit_decoder"}, where=lambda r: "refit_decoder" in protocol(r))
     print("measure              reward  control    diff   >0       p")
     for name, value in (("own-threshold d'", lambda r: curve(r)[1][-1]),
                         ("best-threshold d'", lambda r: float(r["crit_d_end"])),
@@ -901,7 +934,9 @@ def entropy(args):
     block 31."""
     print("bonus   n   own d'  best d'    AUC  greedy payoff  sampled payoff  sampled in +-1")
     for ent in (0.0, 0.01, 0.05):
-        sel = [r for r in swept(args, entropy=ent) if r["cond"] == "reward"
+        sel = [r for r in swept(args, also={"entropy"},
+                                where=lambda r: float(r.get("entropy") or 0.05) == ent)
+               if r["cond"] == "reward"
                and r.get("roc_end_sampled") and (r.get("fa_cost") or "1") == "1"]
         if not sel:
             continue
