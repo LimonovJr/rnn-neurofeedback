@@ -171,11 +171,11 @@ def run(a):
                       baseline=a.baseline, batch=a.batch, temperature=a.temperature)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
         if tracker:
-            late = history["imbalance"][-len(history["imbalance"]) // 4:]
-            crit.update(offset_traj=runs.joined(history["offset"]),
-                        imbalance_traj=runs.joined(history["imbalance"]),
-                        hit_rate_traj=runs.joined(history["hit_rate"]),
-                        abort_traj=runs.joined(history["abort_rate"]),
+            late = history.get("imbalance", [])[-len(history.get("imbalance", [])) // 4:]
+            crit.update(offset_traj=runs.joined(history.get("offset", [])),
+                        imbalance_traj=runs.joined(history.get("imbalance", [])),
+                        hit_rate_traj=runs.joined(history.get("hit_rate", [])),
+                        abort_traj=runs.joined(history.get("abort_rate", [])),
                         imbalance_late=round(float(np.mean(np.abs(late))), 4))
 
     # how far the run moved the weights at all, so that a signal that costs nothing can be told
@@ -242,6 +242,9 @@ def run(a):
                            track=a.track or "", track_rate=f"{a.track_rate:g}" if a.track == "rate"
                            else "", yoke_from=os.path.basename(a.yoke) if a.yoke else "",
                            baseline=a.baseline, batch=a.batch, temperature=f"{a.temperature:g}",
+                           baseline_decay=f"{a.baseline_decay:g}" if a.baseline == "running" else "",
+                           track_every=a.track_every if a.track else "",
+                           track_step=f"{a.track_step:g}" if a.track else "",
                            save_at=runs.joined(sorted(a.save_at)),
                            fa_cost=f"{a.fa_cost:g}", fa_penalty=f"{a.fa_penalty:g}"
                            if a.fa_penalty is not None else "", operant_reward=a.operant_reward,
@@ -253,7 +256,8 @@ def run(a):
                ["task", "cond", "lam", "net", "rep", "updates", "lr", "eval_n", "train_decoder",
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "optimizer", "clipped", "refit_decoder", "entropy",
-                "track", "track_rate", "yoke_from", "baseline", "batch", "temperature",
+                "track", "track_rate", "track_every", "track_step", "yoke_from", "baseline",
+                "baseline_decay", "batch", "temperature",
                 "imbalance_late",
                 "offset_traj", "imbalance_traj", "hit_rate_traj", "abort_traj",
                 "save_at", "all_trials", "d0",
@@ -328,8 +332,11 @@ def main():
     p.add_argument("--track-step", type=float, default=2.0,
                    help="offset moved per unit of rate error")
     p.add_argument("--yoke", help="CSV of a tracked run whose offset trajectory to replay")
-    p.add_argument("--baseline", choices=["batch", "type"], default="batch",
-                   help="the reward's baseline: the batch mean, or each trial type's own mean")
+    p.add_argument("--baseline", choices=["batch", "type", "running"], default="batch",
+                   help="the reward's baseline: the batch mean, each trial type's own mean, or a "
+                        "slow average over past batches")
+    p.add_argument("--baseline-decay", type=float, default=0.99,
+                   help="how slowly the running baseline follows the batches")
     p.add_argument("--batch", type=int, default=signals.BATCH, help="trials per reward update")
     p.add_argument("--temperature", type=float, default=1.0,
                    help="divide the reward policy's logits by this while training")
@@ -394,6 +401,10 @@ def main():
            + ("_balance" if a.track == "balance" else "")
            + (f"_yoke{runs.read(a.yoke)[0]['net']}" if a.yoke else "")
            + ("_typebase" if a.baseline == "type" else "")
+           + ("_runbase" if a.baseline == "running" else "")
+           # block 37's tracker (every 25, step 1) names nothing more, so its files keep their names
+           + (f"_every{a.track_every}_step{a.track_step:g}"
+              if a.track and (a.track_every, a.track_step) != (25, 1.0) else "")
            + (f"_b{a.batch}" if a.batch != signals.BATCH else "")
            + (f"_T{a.temperature:g}" if a.temperature != 1.0 else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")

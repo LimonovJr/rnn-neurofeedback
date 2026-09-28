@@ -51,6 +51,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
           hook=None, device="cpu", xy_from="target", anchor=0.0, kappa=1.5, shuffle=False,
           optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
           axis_increment=None, entropy=ENTROPY, tracker=None, baseline="batch", batch=BATCH,
+          baseline_decay=0.99,
           temperature=1.0):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
@@ -59,7 +60,8 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
     if cond == "reward":
         return reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=anchor,
                          optimizer=optimizer, fa_cost=fa_cost, entropy=entropy, tracker=tracker,
-                         baseline=baseline, batch=batch, temperature=temperature)
+                         baseline=baseline, batch=batch, temperature=temperature,
+                         baseline_decay=baseline_decay)
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
@@ -268,11 +270,15 @@ def loop(model, env_fn, step, updates, lr, freeze_decision, eval_every, hook, de
     return dict(history)
 
 
-def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0, groups=None):
+def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0, groups=None,
+                running=None):
     """REINFORCE on a sampled release time. Hit and correct rejection are +1, a false alarm
     -fa_cost, miss and abort -1, with the advantage normalised within the batch. With `groups`
     (one label per trial) the baseline is each trial type's own mean reward instead of the batch's,
-    which takes out the variance that only says which kind of trial it was."""
+    which takes out the variance that only says which kind of trial it was. With `running` (a dict
+    holding a decay) the baseline and the scale are slow averages over past batches: when every
+    trial of a batch ends the same way the batch's own baseline leaves no advantage at all, and a
+    lagging one still does."""
     logp_hold, logp_release = logp[..., 0], logp[..., 1]
     b, t = logp_release.shape
     device = logp.device
@@ -293,7 +299,14 @@ def policy_loss(logp, target, fa, valid, ent_coef=ENTROPY, fa_cost=1.0, groups=N
         reward = torch.where(correct, torch.ones(b, device=device),
                              torch.where(false_alarm, -fa_cost * torch.ones(b, device=device),
                                          -torch.ones(b, device=device)))
-        if groups is None:
+        if running is not None:
+            if running.get("mean") is None:
+                running["mean"], running["sd"] = float(reward.mean()), float(reward.std())
+            adv = (reward - running["mean"]) / (running["sd"] + 1e-6)
+            keep = running["decay"]
+            running["mean"] = keep * running["mean"] + (1 - keep) * float(reward.mean())
+            running["sd"] = keep * running["sd"] + (1 - keep) * float(reward.std())
+        elif groups is None:
             adv = (reward - reward.mean()) / (reward.std() + 1e-6)
         else:
             centred = reward.clone()
@@ -357,7 +370,7 @@ def track(model, tracker, bias0, counts, upd):
 
 def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, grad_clip=5.0,
               log_every=50, optimizer="adam", fa_cost=1.0, entropy=ENTROPY, tracker=None,
-              baseline="batch", batch=BATCH, temperature=1.0):
+              baseline="batch", batch=BATCH, temperature=1.0, baseline_decay=0.99):
     """`temperature` divides the logits of the policy that is sampled and credited, not of the
     decoder that is scored: it keeps releases stochastic, and so the gradient alive, without
     touching where the greedy threshold sits."""
@@ -368,6 +381,7 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
     w_rec0 = model.W_rec.detach().clone()
     bias0 = float(model.b_out[1])
     counts = defaultdict(float)
+    running = {"decay": baseline_decay, "mean": None} if baseline == "running" else None
 
     history = defaultdict(list)
     if hook is not None and eval_every:
@@ -380,7 +394,8 @@ def reinforce(model, env_fn, updates, lr, eval_every, hook, device, anchor=0.0, 
             logits = logits / temperature
         loss, stats = policy_loss(torch.log_softmax(logits, -1), target, fa, valid,
                                   ent_coef=entropy, fa_cost=fa_cost,
-                                  groups=kinds if baseline == "type" else None)
+                                  groups=kinds if baseline == "type" else None,
+                                  running=running)
         if anchor:
             loss = loss + anchor * ((model.W_rec - w_rec0) ** 2).sum()
         opt.zero_grad()

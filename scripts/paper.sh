@@ -776,6 +776,61 @@ block40e() {
     wait
 }
 
+# 41. Block 37's collapse as a race between two adaptive systems: the same c = 0 tracker, moved
+#     every 100, 400 and 1600 updates instead of every 25. A rate at which the tracker still holds
+#     the balance and the learner does not collapse would make separation of time scales the rule.
+B41="--task context --cond reward --rep 11 --criterion"
+block41() {
+    for every in 100 400 1600; do for net in $NETS; do
+        run "b41_every${every}_net$net" -m experiments.nf $B41 --net $net --track balance \
+            --track-step 1 --track-every $every
+    done; done
+    wait
+}
+
+# 42. The absorbing state is partly the learner's: when every trial of a batch aborts, the batch's
+#     own baseline leaves no advantage. The block-37 tracker with a baseline that lags (a slow
+#     average over past batches).
+block42() {
+    for net in $NETS; do
+        run "b42_runbase_net$net" -m experiments.nf $B41 --net $net --track balance \
+            --track-step 1 --track-every 25 --baseline running
+    done
+    wait
+}
+
+# 43. Block 39 on networks 10-24: calibration by cost, and whether a dearer false alarm also buys
+#     discriminability. 43e reads them five processes at a time.
+block43() {
+    for net in $BATCH2; do for cost in 1 2 4; do
+        run "b43_fac${cost}_net$net" -m experiments.nf --task c1 --cond reward --net $net \
+            --rep 10 --fa-cost $cost --eval-n 10000 --criterion --save-at 1200 \
+            --ckpt-dir nf_c1_cost
+    done; done
+    wait
+}
+
+block43e() {
+    local i=0
+    for nets in 10,11,12 13,14,15 16,17,18 19,20,21 22,23,24; do
+        run "b43_calibration_$i" -m experiments.calibration --ckpt-dir nf_c1_cost --nets $nets \
+            --out results/calibration_c1_b2_$i.csv
+        i=$((i + 1))
+    done
+    wait
+}
+
+# 44. Block 38's batch of 192 with the trials held equal: 2000 updates, as many trials as the
+#     batch of 48 sees in 8000. If the gain survives it is the variance of the estimate, if not the
+#     amount of experience.
+block44() {
+    for net in $NETS; do
+        run "b44_batch192_u2000_net$net" -m experiments.nf --task context --cond reward --net $net \
+            --rep 9 --criterion --batch 192 --updates 2000
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

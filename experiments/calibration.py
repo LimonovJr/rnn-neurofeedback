@@ -44,6 +44,8 @@ def main():
     p.add_argument("--ckpt-dir", default="nf_c1_cost")
     p.add_argument("--select-n", type=int, default=2000)
     p.add_argument("--report-n", type=int, default=10000)
+    p.add_argument("--nets", help="comma-separated networks to read, so a set can be split "
+                                    "across processes")
     p.add_argument("--out", default="results/calibration_c1.csv")
     a = p.parse_args()
     if os.path.exists(a.out):
@@ -52,9 +54,12 @@ def main():
     torch.manual_seed(13)
     np.random.seed(13)
     rows = []
+    nets = {int(n) for n in a.nets.split(",")} if a.nets else None
     for path in sorted(glob.glob(str(CKPT / a.ckpt_dir / "*_u1200.pt"))):
         meta = torch.load(path, weights_only=True)
         net, stem = int(meta["net"]), os.path.basename(path)[:-len("_u1200.pt")]
+        if nets is not None and net not in nets:
+            continue
         cost = next(float(t[3:]) for t in stem.split("_") if t.startswith("fac")) \
             if "_fac" in stem else 1.0
         model = restore(net, path)

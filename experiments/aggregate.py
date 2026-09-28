@@ -320,7 +320,8 @@ DEFAULTS = {"lam": "1", "updates": lambda r: BUDGET[r["task"]], "lr": lambda r: 
             "all_trials": "0", "fa_cost": "1", "fa_penalty": "", "operant_reward": "position",
             "cosine": "", "axis_increment": "", "refit_decoder": "0", "entropy": "0.05",
             "save_at": "", "track": "", "track_rate": "", "yoke_from": "", "baseline": "batch",
-            "batch": "48", "temperature": "1"}
+            "batch": "48", "temperature": "1", "track_every": "", "track_step": "",
+            "baseline_decay": ""}
 # what the published tables were built from, and may pool
 PUBLISHED = {"lam", "eval_n", "train_decoder", "kappa", "shuffle", "explore", "explore_k",
              "optimizer", "all_trials", "fa_cost", "fa_penalty", "operant_reward", "cosine",
@@ -970,7 +971,7 @@ def clamp_precheck(args):
 def calibration(args):
     """Block 39: the reward learners at false-alarm cost 1, 2 and 4, read with the noise on, under
     each cost's payoff (D1-D3), and the payoff lost at the learner's own threshold."""
-    rows = runs.read(f"{args.results}/calibration_c1.csv")
+    rows = runs.read(f"{args.results}/calibration_c1*.csv")
 
     def payoffs(r, cost):
         out = {}
@@ -1041,7 +1042,8 @@ def passage(args):
             for grp in (fit, new)))
 
 
-TRACKED = SWEPT | {"save_at", "track", "track_rate", "yoke_from", "baseline", "batch"}
+TRACKED = SWEPT | {"save_at", "track", "track_rate", "yoke_from", "baseline", "batch",
+                   "track_every", "track_step"}
 
 
 def adaptive(args):
@@ -1054,14 +1056,17 @@ def adaptive(args):
     def label(r):
         if r["cond"] == "control":
             return "control"
-        return (r.get("track") or "") + ("typebase" if r.get("baseline") == "type" else "") + \
-            (f"batch{r['batch']}" if int(r.get("batch") or 48) != 48 else "") or "fixed"
+        return ((r.get("track") or "") + ("typebase" if r.get("baseline") == "type" else "")
+                + (f"batch{r['batch']}" if int(r.get("batch") or 48) != 48 else "")
+                + (f"_u{r['updates']}" if int(r["updates"]) != BUDGET["context"] else "")
+                or "fixed")
 
     def late(r, key):
         v = runs.split(r.get(key) or "")
         return float(np.mean(np.abs(v[-len(v) // 4:]))) if v else float("nan")
 
-    arms = ("fixed", "balance", "rate", "yoke", "typebase", "batch192", "control")
+    arms = ("fixed", "balance", "rate", "yoke", "typebase", "batch192", "batch192_u2000",
+            "control")
     auc = {a: per_net([r for r in rows if label(r) == a], lambda r: float(r["auc_end"]))
            for a in arms}
     best = {a: per_net([r for r in rows if label(r) == a], lambda r: float(r["crit_d_end"]))
@@ -1080,7 +1085,8 @@ def adaptive(args):
               + (",".join(str(c) for c in cross) if cross else ""))
     print("\ncontrast               AUC diff      >0      p   best d' diff")
     for a, b in (("balance", "fixed"), ("yoke", "fixed"), ("rate", "fixed"),
-                 ("typebase", "fixed"), ("batch192", "fixed"), ("fixed", "control"),
+                 ("typebase", "fixed"), ("batch192", "fixed"), ("batch192_u2000", "fixed"),
+                 ("batch192_u2000", "batch192"), ("fixed", "control"),
                  ("batch192", "control"), ("typebase", "control")):
         nets = sorted(set(auc[a]) & set(auc[b]))
         if not nets:
