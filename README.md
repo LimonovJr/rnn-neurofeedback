@@ -111,6 +111,7 @@ python -m experiments.pretrain --net 0            # three-stage curriculum, save
 python -m experiments.fit_head --task c1 --net 0  # position head, fitted on frozen dynamics
 python -m experiments.headroom --setting c1 --arm A --init incumbent --net 0
 python -m experiments.aggregate headroom          # rebuild the table from whatever has been run
+python -m experiments.figures                     # figures, into results/figures
 ```
 
 `scripts/smoke.sh` runs every entry point on a budget small enough to finish in minutes, which is
