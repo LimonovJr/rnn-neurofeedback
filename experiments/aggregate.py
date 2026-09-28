@@ -980,6 +980,14 @@ def calibration(args):
             out[o] = correct - cost * fa - miss - abort
         return out
 
+    for label, nets in (("networks 0-4", range(0, 5)), ("networks 10-24", range(10, 25))):
+        calibration_set([r for r in rows if int(r["net"]) in nets], label, payoffs)
+
+
+def calibration_set(rows, label, payoffs):
+    if not rows:
+        return
+    print(f"\n{label}")
     for readout in ("sampled", "greedy"):
         print(f"{readout} read-out  trained  optimum under c1   c2    c4   own in +-1  "
               f"FA at own   hit at own  payoff lost   best d'   AUC")
