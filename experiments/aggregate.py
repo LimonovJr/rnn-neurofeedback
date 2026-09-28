@@ -967,6 +967,147 @@ def clamp_precheck(args):
                 f"{agree:>12.1f}")
 
 
+def calibration(args):
+    """Block 39: the reward learners at false-alarm cost 1, 2 and 4, read with the noise on, under
+    each cost's payoff (D1-D3), and the payoff lost at the learner's own threshold."""
+    rows = runs.read(f"{args.results}/calibration_c1.csv")
+
+    def payoffs(r, cost):
+        out = {}
+        for point in r["roc"].split("|"):
+            o, _, _, correct, fa, miss, abort = (float(v) for v in point.split(":"))
+            out[o] = correct - cost * fa - miss - abort
+        return out
+
+    for readout in ("sampled", "greedy"):
+        print(f"{readout} read-out  trained  optimum under c1   c2    c4   own in +-1  "
+              f"FA at own   hit at own  payoff lost   best d'   AUC")
+        for cost in (1.0, 2.0, 4.0):
+            sel = [r for r in rows if r["readout"] == readout and float(r["trained_cost"]) == cost]
+            own = [float(r[f"payoff_c{cost:g}"]) for r in sel]
+            lost = [max(payoffs(r, cost).values()) - payoffs(r, cost)[0.0] for r in sel]
+            print(f"{'':<19}{cost:>5g}   " + "".join(
+                f"{np.mean([float(r[f'payoff_c{c:g}']) for r in sel]):>+8.2f}" for c in (1, 2, 4))
+                + f"{sum(abs(v) <= 1 for v in own):>9d}/{len(own)}"
+                + f"{np.mean([float(r['fa_at_zero']) for r in sel]):>11.3f}"
+                + f"{np.mean([float(r['hit_at_zero']) for r in sel]):>12.3f}"
+                + f"{np.mean(lost):>13.4f}{np.mean([float(r['best_d']) for r in sel]):>10.3f}"
+                + f"{np.mean([float(r['auc']) for r in sel]):>7.3f}")
+
+
+def passage(args):
+    """Block 40: the first-passage account on networks 10-24 with the coefficients fixed on
+    networks 0-4 (F1), against the mean logit (F2), and the route of each signal (F3)."""
+    rows = runs.read(f"{args.results}/stepwise_c1_net*.csv")
+    sweeps = [r for r in rows if r["kind"] == "sweep"]
+    start = per_net([r for r in sweeps if int(r["upd"]) == 0], lambda r: float(r["offset"]))
+    end = {r["run"]: float(r["offset"]) for r in sweeps if int(r["upd"]) == 1200}
+    act = [r for r in rows if r["kind"] == "activity"]
+    for r in act:
+        r["d_offset"] = end[r["run"]] - start[int(r["net"])]
+    fit = [r for r in act if int(r["net"]) < 5]
+    new = [r for r in act if int(r["net"]) >= 10]
+    x = np.array([float(r["passage_offset"]) for r in fit])
+    slope, icept = np.polyfit(x, [r["d_offset"] for r in fit], 1)
+    y = np.array([r["d_offset"] for r in new])
+    pred = icept + slope * np.array([float(r["passage_offset"]) for r in new])
+    r2 = lambda t, f: 1 - ((t - f) ** 2).sum() / ((t - t.mean()) ** 2).sum()
+    print(f"F1  fitted on nets 0-4: {icept:+.2f} + {slope:.2f} x;  out of sample on "
+          f"{len(new)} runs: R2 {r2(y, pred):.2f}")
+    for c in ("passage_offset", "logit_shift"):
+        xs = np.array([float(r[c]) for r in new])
+        b = np.polyfit(xs, y, 1)
+        print(f"F2  refitted on nets 10-24, {c:<15} slope {b[0]:+.2f} intercept {b[1]:+.2f} "
+              f"R2 {r2(y, np.polyval(b, xs)):.2f}")
+    print("F3  networks 10-24, count of networks")
+    for a, tests in (("reward", (("hold level falls", lambda r: float(r["d_hold_level"]) < 0),
+                                 ("|d SD| < |d level|", lambda r: abs(float(r["d_hold_sd"]))
+                                  < abs(float(r["d_hold_level"]))))),
+                     ("k2", (("hold SD rises", lambda r: float(r["d_hold_sd"]) > 0),
+                             ("best offset falls", lambda r: r["d_offset"] < 0))),
+                     ("shuffled", (("norm ratio < 1", lambda r: float(r["norm_ratio"]) < 1),
+                                   ("response peak falls", lambda r: float(r["d_resp_max"]) < 0),
+                                   ("best offset rises", lambda r: r["d_offset"] > 0)))):
+        sel = [r for r in new if arm(r["run"]) == a]
+        print(f"    {a:<9}" + "; ".join(f"{name} {sum(t(r) for r in sel)}/{len(sel)}"
+                                        for name, t in tests)
+              + f"; all {sum(all(t(r) for _, t in tests) for r in sel)}/{len(sel)}")
+    print("    network means, nets 0-4 | nets 10-24:")
+    for a in ("reward", "control", "k2", "shuffled"):
+        print(f"    {a:<9}" + " | ".join(
+            " ".join(f"{c} {np.mean([float(r[c]) for r in grp if arm(r['run']) == a]):+.2f}"
+                     for c in ("d_offset", "passage_offset", "d_hold_level", "d_hold_sd",
+                               "d_resp_max", "norm_ratio"))
+            for grp in (fit, new)))
+
+
+TRACKED = SWEPT | {"save_at", "track", "track_rate", "yoke_from", "baseline", "batch"}
+
+
+def adaptive(args):
+    """Blocks 37 and 38 on the context task: the reward learner with its threshold tracked (c = 0,
+    a hit rate of 0.7, or yoked), at a fixed threshold, with the trial-type baseline and with four
+    times the batch, against supervision; the tracker's manipulation checks."""
+    rows = [r for r in runs.read(f"{args.results}/nf_context_*_net*_r9.csv")
+            if protocol(r) <= TRACKED and r.get("crit_d_end")]
+
+    def label(r):
+        if r["cond"] == "control":
+            return "control"
+        return (r.get("track") or "") + ("typebase" if r.get("baseline") == "type" else "") + \
+            (f"batch{r['batch']}" if int(r.get("batch") or 48) != 48 else "") or "fixed"
+
+    def late(r, key):
+        v = runs.split(r.get(key) or "")
+        return float(np.mean(np.abs(v[-len(v) // 4:]))) if v else float("nan")
+
+    arms = ("fixed", "balance", "rate", "yoke", "typebase", "batch192", "control")
+    auc = {a: per_net([r for r in rows if label(r) == a], lambda r: float(r["auc_end"]))
+           for a in arms}
+    best = {a: per_net([r for r in rows if label(r) == a], lambda r: float(r["crit_d_end"]))
+            for a in arms}
+    print("arm        n    AUC  best d'  late |imbalance|  late aborts  update aborts > 0.5")
+    for a in arms:
+        sel = [r for r in rows if label(r) == a]
+        if not sel:
+            continue
+        cross = [next((25 * (i + 1) for i, v in enumerate(runs.split(r["abort_traj"]))
+                       if v > 0.5), None) for r in sel if r.get("abort_traj")]
+        print(f"{a:<9}{len(sel):>3}{np.mean(list(auc[a].values())):>7.3f}"
+              f"{np.mean(list(best[a].values())):>8.3f}"
+              f"{np.mean([late(r, 'imbalance_traj') for r in sel]):>17.3f}"
+              f"{np.mean([late(r, 'abort_traj') for r in sel]):>13.3f}   "
+              + (",".join(str(c) for c in cross) if cross else ""))
+    print("\ncontrast               AUC diff      >0      p   best d' diff")
+    for a, b in (("balance", "fixed"), ("yoke", "fixed"), ("rate", "fixed"),
+                 ("typebase", "fixed"), ("batch192", "fixed"), ("fixed", "control"),
+                 ("batch192", "control"), ("typebase", "control")):
+        nets = sorted(set(auc[a]) & set(auc[b]))
+        if not nets:
+            continue
+        d = [auc[a][n] - auc[b][n] for n in nets]
+        e = [best[a][n] - best[b][n] for n in nets]
+        print(f"{a + ' - ' + b:<20}{np.mean(d):>+10.4f}{sum(v > 0 for v in d):>6d}/{len(d)}"
+              f"{stats.one_sample(d)[2]:>8.3f}{np.mean(e):>+12.3f}")
+
+
+def adaptive_split(args):
+    """Block 37e: the step split of the reward gradient on the states each block-37 arm kept."""
+    rows = [r for r in runs.read(f"{args.results}/criterion_share_b37_net*.csv")
+            if r["signal"] == "reward" and r["state"] != "start"]
+    name = lambda s: ("balance" if "_balance" in s else "rate" if "_track" in s else
+                      "yoke" if "_yoke" in s else "control" if "_control_" in s else "fixed")
+    print("arm      update  criterion  separation  share  halves cos  margin go  margin no-go")
+    for a in ("fixed", "balance", "rate", "yoke", "control"):
+        for upd in (2000, 4000, 8000):
+            sel = [r for r in rows if name(r["state"]) == a and r["state"].endswith(f"_u{upd}")]
+            if sel:
+                print(f"{a:<9}{upd:>6}" + "".join(
+                    f"{np.mean([float(r[c]) for r in sel]):>+11.3f}"
+                    for c in ("criterion", "separation", "criterion_share", "halves_cos",
+                              "margin_signal", "margin_noise")))
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -975,7 +1116,9 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "projection": projection, "movement": movement, "retention": retention,
           "share": share, "equivalence": equivalence, "criterion": criterion,
           "components": components, "axis": axis, "batch2": batch2, "readout": readout,
-          "stepwise": stepwise, "refit": refit, "entropy": entropy, "clamp-precheck": clamp_precheck}
+          "stepwise": stepwise, "refit": refit, "entropy": entropy, "clamp-precheck": clamp_precheck,
+          "calibration": calibration, "passage": passage, "adaptive": adaptive,
+          "adaptive-split": adaptive_split}
 
 
 def main():
