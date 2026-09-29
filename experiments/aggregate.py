@@ -1122,6 +1122,26 @@ def adaptive_split(args):
                               "margin_signal", "margin_noise")))
 
 
+def context_optimum(args):
+    """Where the reward learner's payoff is best on the context task against where the tracker's
+    c = 0 sits, on saved states read with the noise on and sampled releases."""
+    rows = runs.read(f"{args.results}/context_optimum_net*.csv")
+    kind = lambda r: r["state"].split(" (")[0]
+    print("state          n   c=0 exists   optimum conservative   c=0 - optimum   payoff lost "
+          "at own   at c=0   aborts at c=0")
+    for k in ("start", "reward u2000", "reward u4000", "reward u8000", "reward end", "control end"):
+        sel = [r for r in rows if kind(r) == k]
+        if not sel:
+            continue
+        found = [r for r in sel if r["offset_c0"] not in ("", "nan")]
+        gap = [float(r["offset_c0"]) - float(r["offset_payoff"]) for r in found]
+        lost = lambda key: np.mean([float(r["payoff_best"]) - float(r[key]) for r in sel])
+        print(f"{k:<14}{len(sel):>3}{len(found):>8}/{len(sel)}{sum(g > 0 for g in gap):>17}/"
+              f"{len(found)}{np.mean(gap) if gap else float('nan'):>+16.2f}"
+              f"{lost('payoff_at_own'):>18.3f}{lost('payoff_at_c0'):>9.3f}"
+              f"{np.mean([float(r['abort_c0']) for r in found]) if found else float('nan'):>14.3f}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -1132,7 +1152,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "components": components, "axis": axis, "batch2": batch2, "readout": readout,
           "stepwise": stepwise, "refit": refit, "entropy": entropy, "clamp-precheck": clamp_precheck,
           "calibration": calibration, "passage": passage, "adaptive": adaptive,
-          "adaptive-split": adaptive_split}
+          "adaptive-split": adaptive_split, "context-optimum": context_optimum}
 
 
 def main():
