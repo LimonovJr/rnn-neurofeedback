@@ -23,7 +23,7 @@ from src import runs, tasks
 from src.model import CKPT, load
 
 ENV = tasks.context()
-GRID = np.arange(-14.0, 6.01, 0.25)
+GRID = np.arange(-14.0, 14.01, 0.25)
 
 
 def payoff(m, target, fa, valid, draws=10):
@@ -74,10 +74,14 @@ def main():
             m, target, fa, valid = margins(model, ENV, a.n)
             # once every trial aborts no rate is left and the sum drops to zero, so the crossing is
             # the first one coming from the conservative side, not a bisection over the whole range
-            sums = [sum(rates(m + o, target, fa, valid, 5)[:2]) for o in GRID]
+            scan = [rates(m + o, target, fa, valid, 5) for o in GRID]
+            sums = [h + f for h, f, _ in scan]
             k = next((i for i, v in enumerate(sums) if v >= 1.0), None)
-            c0 = float("nan") if not k else float(
+            c0 = float("nan") if k in (None, 0) else float(
                 GRID[k - 1] + (1.0 - sums[k - 1]) / (sums[k] - sums[k - 1]) * (GRID[k] - GRID[k - 1]))
+            # beyond the peak of the sum a tracker's correction has the wrong sign: a sum below one
+            # lifts the offset, which lowers the sum further
+            peak = int(np.argmax(sums))
             curve = [payoff(m + o, target, fa, valid) for o in GRID]
             best = int(np.argmax([v for v, _ in curve]))
             at_c0 = payoff(m + c0, target, fa, valid)
@@ -87,7 +91,8 @@ def main():
                              payoff_best=round(curve[best][0], 4),
                              payoff_at_c0=round(at_c0[0], 4), payoff_at_own=round(at_zero[0], 4),
                              abort_best=round(curve[best][1], 4), abort_c0=round(at_c0[1], 4),
-                             abort_own=round(at_zero[1], 4)))
+                             abort_own=round(at_zero[1], 4), offset_peak=float(GRID[peak]),
+                             sum_peak=round(sums[peak], 4), abort_at_peak=round(scan[peak][2], 4)))
             r = rows[-1]
             print(f"  [net {net} {state:<18}] c=0 at {r['offset_c0']:+6.2f}  payoff optimum at "
                   f"{r['offset_payoff']:+6.2f}  payoff: best {r['payoff_best']:+.3f}, at c=0 "
