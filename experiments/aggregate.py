@@ -1142,6 +1142,193 @@ def context_optimum(args):
               f"{np.mean([float(r['abort_c0']) for r in found]) if found else float('nan'):>14.3f}")
 
 
+def location(args):
+    """Block 46: best-threshold d' on c1 with the distractors moved to the cue, to the opposite edge,
+    or no cue, against the task, per state; and the share of discriminability location carries."""
+    rows = runs.read(f"{args.results}/location_c1_*.csv")
+    for state in ("theta0", "control"):
+        at = {v: per_net([r for r in rows if r["state"] == state and r["variant"] == v],
+                         lambda r: float(r["best_d"])) for v in ("task", "at_cue", "opposite", "no_cue")}
+        nets = sorted(at["task"])
+        if not nets:
+            continue
+        print(f"\n{state}: best-threshold d' on the task {np.mean([at['task'][n] for n in nets]):.3f} "
+              f"({len(nets)} networks)")
+        for v in ("at_cue", "opposite", "no_cue"):
+            d = [at[v][n] - at["task"][n] for n in nets if n in at[v]]
+            mean, sem, p = stats.one_sample(d)
+            print(f"    {v:<9} {np.mean([at[v][n] for n in nets]):.3f}   minus task {mean:+.3f} "
+                  f"+- {sem:.3f}  p = {p:.4f}  ({sum(x < 0 for x in d)}/{len(d)} lower)")
+        share = [(at["task"][n] - at["at_cue"][n]) / at["task"][n] for n in nets]
+        mean, sem, _ = stats.one_sample(share)
+        print(f"    share of the task's best d' lost at_cue: {mean:.3f} "
+              f"(95 % CI {mean - 2.09 * sem:.3f} to {mean + 2.09 * sem:.3f})")
+
+
+def correlate(x, y):
+    from scipy.stats import pearsonr
+    r, p = pearsonr(x, y)
+    return f"r = {r:+.2f} (p = {p:.3f})"
+
+
+def partial(x, y, z):
+    """Correlation of x and y with z regressed out of both."""
+    x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
+    rx = x - np.polyval(np.polyfit(z, x, 1), z)
+    ry = y - np.polyval(np.polyfit(z, y, 1), z)
+    return correlate(rx, ry)
+
+
+def induction(args):
+    """Block 47: across networks, how well each representational target was induced against what
+    behaviour did: at the decoder's own threshold, through its best threshold, and in between."""
+    rows = runs.read(f"{args.results}/induction_c1_net*.csv")
+    for label, sel in (("magnified (k 2)", [r for r in rows if not int(r["shuffle"])]),
+                       ("shuffled", [r for r in rows if int(r["shuffle"])])):
+        if len(sel) < 4:
+            continue
+        v = lambda k: [float(r[k]) for r in sel]
+        print(f"\n{label}, {len(sel)} networks; induction {np.mean(v('induction')):.3f} "
+              f"(SD {np.std(v('induction'), ddof=1):.3f})")
+        for measure in ("induction", "d_gain", "d_crossnobis"):
+            print(f"    {measure:<13} vs own-threshold d' {correlate(v(measure), v('d_own'))}; "
+                  f"vs best offset {correlate(v(measure), v('d_offset'))}; "
+                  f"vs best-threshold d' {correlate(v(measure), v('d_best'))}; "
+                  f"vs AUC {correlate(v(measure), v('d_auc'))}")
+        print(f"    induction vs own-threshold d', best offset held fixed: "
+              f"{partial(v('induction'), v('d_own'), v('d_offset'))}")
+
+
+def dose(args):
+    """Block 45e: the magnified target at kappa 0.5, 1, 1.5 and 2 on networks 10-24."""
+    rows = [r for r in runs.read(f"{args.results}/induction_dose_c1_net*.csv")
+            if not int(r["shuffle"])]
+    kappas = sorted({float(r["kappa"]) for r in rows})
+    cols = ("induction", "d_gain", "d_offset", "d_best", "d_own", "d_auc", "d_hold_level",
+            "d_hold_sd", "d_resp_max", "norm_ratio")
+    print("kappa  n " + "".join(f"{c:>13}" for c in cols))
+    for k in kappas:
+        sel = [r for r in rows if float(r["kappa"]) == k]
+        print(f"{k:<5}{len(sel):>3} " + "".join(f"{np.mean([float(r[c]) for r in sel]):>+13.3f}"
+                                            for c in cols))
+    nets = sorted({int(r["net"]) for r in rows})
+
+    def slopes(y, x="kappa"):
+        out = []
+        for n in nets:
+            sel = [r for r in rows if int(r["net"]) == n]
+            if len(sel) >= 3:
+                out.append(np.polyfit([float(r[x]) for r in sel], [float(r[y]) for r in sel], 1)[0])
+        return out
+
+    for y, sign in (("d_offset", -1), ("d_hold_sd", 1), ("norm_ratio", 1)):
+        sl = slopes(y)
+        print(f"slope of {y} on kappa: mean {np.mean(sl):+.3f}, "
+              f"{sum(np.sign(v) == sign for v in sl)}/{len(sl)} in the predicted direction")
+    half = [float(r["d_offset"]) for r in rows if float(r["kappa"]) == 0.5]
+    if half:
+        print(f"kappa 0.5 best-offset shift: mean {np.mean(half):+.3f}, "
+              f"{sum(v > 0 for v in half)}/{len(half)} conservative")
+    for y in ("d_offset", "d_best"):
+        sl = slopes(y, x="d_gain")
+        print(f"within networks, slope of {y} on the head-gain change: mean {np.mean(sl):+.3f}, "
+              f"{sum(v < 0 for v in sl)}/{len(sl)} negative")
+
+
+def rt(args):
+    """Block 48: each start network's criterion line against every trained state read at its own
+    threshold: the change a pure criterion shift would have produced at the same c, and the rest."""
+    rows = runs.read(f"{args.results}/rt_signatures_c1_*.csv")
+    lines = defaultdict(list)
+    for r in rows:
+        if r["kind"] == "line":
+            lines[int(r["net"])].append(r)
+    rising, residual = [], defaultdict(lambda: defaultdict(list))
+    for net, line in lines.items():
+        line = sorted(line, key=lambda r: float(r["offset"]))
+        peak = int(np.argmax([float(r["hit"]) for r in line]))
+        branch = [r for r in line[:peak + 1] if r["rt"] not in ("", "nan")]
+        c = np.array([float(r["c"]) for r in branch])
+        order = np.argsort(c)
+        from scipy.stats import spearmanr
+        rising.append(spearmanr(c, [float(r["rt"]) for r in branch])[0] > 0)
+        base = next(r for r in line if float(r["offset"]) == 0.0)
+        for r in rows:
+            if r["kind"] != "point" or int(r["net"]) != net or r["rt"] in ("", "nan"):
+                continue
+            cp = float(r["c"])
+            if not c.min() <= cp <= c.max():
+                continue
+            a = arm(r["run"] + "_")
+            for key in ("rt", "rt_sd", "d"):
+                pred = np.interp(cp, c[order], [float(branch[i][key]) for i in order])
+                residual[a][key].append(float(r[key]) - pred)
+            residual[a]["dc"].append(cp - float(base["c"]))
+    print(f"R1: along the criterion line hit RT rises with c on {sum(rising)}/{len(rising)} networks")
+    print("arm          n    change of c   RT beyond the line (ms)   RT SD beyond (ms)   d' beyond")
+    for a in ("reward", "control", "control_fa", "joint", "k2", "shuffled"):
+        res = residual.get(a)
+        if not res:
+            continue
+        cell = lambda k: "{:+.2f} +- {:.2f} (p {:.3f})".format(*stats.one_sample(res[k]))
+        print(f"{a:<11}{len(res['rt']):>3}   {np.mean(res['dc']):+.3f}        {cell('rt'):<26}"
+              f"{cell('rt_sd'):<24}{cell('d')}")
+
+
+def repertoire(args):
+    """Block 49: re-association or new patterns on the context task, by state."""
+    rows = runs.read(f"{args.results}/repertoire_context_net*.csv")
+    print("state             n  outside subspace  beyond repertoire  potent x random    AUC")
+    for state in sorted({r["state"] for r in rows}, key=lambda s: (s.split(" u")[0], len(s), s)):
+        sel = [r for r in rows if r["state"] == state]
+        auc = [float(r["auc"]) for r in sel if r.get("auc")]
+        print(f"{state:<17}{len(sel):>2}{np.mean([float(r['outside_share']) for r in sel]):>13.3f}"
+              f"{np.mean([float(r['new_patterns']) for r in sel]):>19.3f}"
+              f"{np.mean([float(r['potent_over_random']) for r in sel]):>16.1f}"
+              f"{np.mean(auc) if auc else float('nan'):>11.3f}")
+    nets = sorted({int(r["net"]) for r in rows})
+    for upd in (2000, 4000, 8000):
+        pot = {a: per_net([r for r in rows if r["state"] == f"{a} u{upd}"],
+                          lambda r: float(r["potent_over_random"])) for a in ("reward", "control")}
+        both = sorted(set(pot["reward"]) & set(pot["control"]))
+        if both:
+            print(f"P1 update {upd}: reward more potent than supervision on "
+                  f"{sum(pot['reward'][n] > pot['control'][n] for n in both)}/{len(both)}")
+    diffs = []
+    for n in nets:
+        rew = next((r for r in rows if int(r["net"]) == n and r["state"] == "reward b192 u8000"), None)
+        sup = [r for r in rows if int(r["net"]) == n and r["state"].startswith("control")
+               and r.get("auc")]
+        if rew and rew.get("auc") and sup:
+            match = min(sup, key=lambda r: abs(float(r["auc"]) - float(rew["auc"])))
+            diffs.append((float(match["outside_share"]) - float(rew["outside_share"]),
+                          float(match["auc"]) - float(rew["auc"]), match["state"]))
+    if diffs:
+        mean, sem, p = stats.one_sample([d for d, _, _ in diffs])
+        print(f"P2 at matched AUC (AUC gap {np.mean([g for _, g, _ in diffs]):+.3f}): supervision "
+              f"minus reward in outside share {mean:+.4f} +- {sem:.4f}, p = {p:.3f}, "
+              f"{sum(d > 0 for d, _, _ in diffs)}/{len(diffs)} larger; matched states "
+              f"{[m for _, _, m in diffs]}")
+
+
+def psychometric(args):
+    """Block 50: the c1 comparison at five target strengths, without retraining."""
+    rows = runs.read(f"{args.results}/psychometric_c1_net*.csv")
+    print("strength   theta0 best   reward - control: best d'       own d'          AUC")
+    for strength in sorted({float(r["strength"]) for r in rows}):
+        at = lambda state, key: per_net([r for r in rows if r["state"] == state
+                                         and float(r["strength"]) == strength],
+                                        lambda r: float(r[key]))
+        cells = []
+        for key in ("best_d", "own_d", "auc"):
+            a, b = at("reward", key), at("control", key)
+            d = [a[n] - b[n] for n in sorted(set(a) & set(b))]
+            m, se, p = stats.one_sample(d)
+            cells.append(f"{m:+.3f} (p {p:.2f})")
+        print(f"{strength:<9}{np.mean(list(at('theta0', 'best_d').values())):>10.3f}     "
+              + "   ".join(f"{c:<16}" for c in cells))
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -1152,7 +1339,9 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "components": components, "axis": axis, "batch2": batch2, "readout": readout,
           "stepwise": stepwise, "refit": refit, "entropy": entropy, "clamp-precheck": clamp_precheck,
           "calibration": calibration, "passage": passage, "adaptive": adaptive,
-          "adaptive-split": adaptive_split, "context-optimum": context_optimum}
+          "adaptive-split": adaptive_split, "context-optimum": context_optimum,
+          "location": location, "induction": induction, "dose": dose, "rt": rt,
+          "repertoire": repertoire, "psychometric": psychometric}
 
 
 def main():
