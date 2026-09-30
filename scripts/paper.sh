@@ -841,6 +841,66 @@ block45() {
     wait
 }
 
+# 45e. The kappa dose read on its kept states: induction, behaviour, first passage, per network.
+block45e() {
+    for net in $BATCH2; do
+        run "b45e_net$net" -m experiments.induction --nets $net \
+            --glob "nf_c1_expand_lam1_n*_k*_lr0.0001_net{net}_r6_u1200.pt" --exclude _shuf \
+            --sweep-n 1500,6000 \
+            --out results/induction_dose_c1_net$net.csv
+    done
+    wait
+}
+
+READ_NETS="0 1 2 3 4 $BATCH2"
+
+# 46. How much of c1's discriminability passes through location: distractors moved to the cue, to
+#     the opposite edge, or no cue, on the start and the supervised end state.
+block46() {
+    for nets in 0,1,2,3 4,10,11,12 13,14,15,16 17,18,19,20 21,22,23,24; do
+        run "b46_location_${nets//,/_}" -m experiments.location --nets $nets \
+            --out results/location_c1_${nets//,/_}.csv
+    done
+    wait
+}
+
+# 47. Induction of the magnified and shuffled targets against behaviour, across networks.
+block47() {
+    for net in $READ_NETS; do
+        run "b47_induction_net$net" -m experiments.induction --nets $net \
+            --glob "nf_c1_expand_lam1_n10000_k*_net{net}_r6_u1200.pt" \
+            --out results/induction_c1_net$net.csv
+    done
+    wait
+}
+
+# 48. Reaction-time signatures: each start network's criterion line against every trained state.
+block48() {
+    for nets in 0,1,2,3 4,10,11,12 13,14,15,16 17,18,19,20 21,22,23,24; do
+        run "b48_rt_${nets//,/_}" -m experiments.rt_signatures --nets $nets \
+            --out results/rt_signatures_c1_${nets//,/_}.csv
+    done
+    wait
+}
+
+# 49. Re-association or new patterns on the context task.
+block49() {
+    for net in $NETS; do
+        run "b49_repertoire_net$net" -m experiments.repertoire --nets $net \
+            --out results/repertoire_context_net$net.csv
+    done
+    wait
+}
+
+# 50. Target strength: the c1 comparison at five strengths, without retraining.
+block50() {
+    for net in $NETS; do
+        run "b50_psychometric_net$net" -m experiments.psychometric --nets $net \
+            --out results/psychometric_c1_net$net.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
