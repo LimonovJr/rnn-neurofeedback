@@ -28,6 +28,7 @@ builds has to reach behaviour through a decoder that did not change.
 moved from rich toward lazy without touching the learning rate.
 """
 
+import math
 from collections import defaultdict
 
 import numpy as np
@@ -52,7 +53,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
           optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
           axis_increment=None, entropy=ENTROPY, tracker=None, baseline="batch", batch=BATCH,
           baseline_decay=0.99,
-          temperature=1.0):
+          temperature=1.0, focus=None):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
@@ -65,7 +66,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
 
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
-        step = expand_step(kappa, shuffle)
+        step = expand_step(kappa, shuffle, focus)
     elif cond == "gated":
         step = gated_step(lam)
     elif cond == "control_fa":
@@ -114,7 +115,7 @@ def reward_aux_step(lam):
     return step
 
 
-def expand_step(kappa, shuffle=False):
+def expand_step(kappa, shuffle=False, focus=None):
     """A within-manifold target: ask the frozen position head to read the same positions, further
     apart. The delay state is pushed until the head decodes kappa times the true position, so the
     code is stretched along the directions the head already uses and nothing else is asked for.
@@ -123,13 +124,22 @@ def expand_step(kappa, shuffle=False):
     `shuffle` pairs each trial with another trial's position. The loss has the same form, the same
     scale and the same reach into the weights, and the code it asks for carries no information, so
     it separates the cost of improving the representation from the cost of training against a
-    representational loss at all."""
+    representational loss at all.
+
+    `focus` = (angle, half-width) in radians asks for kappa only on trials cued inside that sector
+    and for the present code (kappa 1) elsewhere, so the rest of the disk is a control inside the
+    same network."""
     def step(model, batch):
         x, _, _, _, xy_true, delay_mask, _ = batch
         _, _, h = model(x, return_hidden=True)
         if shuffle:
             xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
-        err = positional_error(model, h, kappa * xy_true, delay_mask)
+        gain = kappa
+        if focus is not None:
+            angle = torch.atan2(xy_true[:, 0, 1], xy_true[:, 0, 0])
+            inside = torch.remainder(angle - focus[0] + math.pi, 2 * math.pi) - math.pi
+            gain = torch.where(inside.abs() <= focus[1], kappa, 1.0)[:, None, None]
+        err = positional_error(model, h, gain * xy_true, delay_mask)
         return err, {"expand_err": err.detach()}
     return step
 

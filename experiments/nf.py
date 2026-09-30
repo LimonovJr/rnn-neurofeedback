@@ -168,7 +168,9 @@ def run(a):
                       optimizer=a.optimizer, fa_cost=a.fa_cost, fa_penalty=a.fa_penalty,
                       operant_reward=a.operant_reward, axis=target,
                       axis_increment=a.axis_increment, entropy=a.entropy, tracker=tracker,
-                      baseline=a.baseline, batch=a.batch, temperature=a.temperature)
+                      baseline=a.baseline, batch=a.batch, temperature=a.temperature,
+                      focus=(np.radians(a.focus_theta), np.radians(a.focus_width))
+                      if a.focus_theta is not None else None)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
         if tracker:
             late = history.get("imbalance", [])[-len(history.get("imbalance", [])) // 4:]
@@ -242,6 +244,8 @@ def run(a):
                            track=a.track or "", track_rate=f"{a.track_rate:g}" if a.track == "rate"
                            else "", yoke_from=os.path.basename(a.yoke) if a.yoke else "",
                            baseline=a.baseline, batch=a.batch, temperature=f"{a.temperature:g}",
+                           focus_theta=f"{a.focus_theta:g}" if a.focus_theta is not None else "",
+                           focus_width=f"{a.focus_width:g}" if a.focus_theta is not None else "",
                            baseline_decay=f"{a.baseline_decay:g}" if a.baseline == "running" else "",
                            track_every=a.track_every if a.track else "",
                            track_step=f"{a.track_step:g}" if a.track else "",
@@ -257,7 +261,7 @@ def run(a):
                 "target", "anchor", "kappa", "shuffle", "adapt_decoder", "rule", "explore",
                 "explore_k", "rec_noise_scale", "optimizer", "clipped", "refit_decoder", "entropy",
                 "track", "track_rate", "track_every", "track_step", "yoke_from", "baseline",
-                "baseline_decay", "batch", "temperature",
+                "baseline_decay", "batch", "temperature", "focus_theta", "focus_width",
                 "imbalance_late",
                 "offset_traj", "imbalance_traj", "hit_rate_traj", "abort_traj",
                 "save_at", "all_trials", "d0",
@@ -338,6 +342,10 @@ def main():
     p.add_argument("--baseline-decay", type=float, default=0.99,
                    help="how slowly the running baseline follows the batches")
     p.add_argument("--batch", type=int, default=signals.BATCH, help="trials per reward update")
+    p.add_argument("--focus-theta", type=float,
+                   help="expand: ask for kappa only on trials cued within --focus-width degrees of "
+                        "this angle (degrees), the present code elsewhere")
+    p.add_argument("--focus-width", type=float, default=45.0)
     p.add_argument("--temperature", type=float, default=1.0,
                    help="divide the reward policy's logits by this while training")
     p.add_argument("--entropy", type=float, default=signals.ENTROPY,
@@ -407,6 +415,7 @@ def main():
               if a.track and (a.track_every, a.track_step) != (25, 1.0) else "")
            + (f"_b{a.batch}" if a.batch != signals.BATCH else "")
            + (f"_T{a.temperature:g}" if a.temperature != 1.0 else "")
+           + (f"_foc{a.focus_theta:g}" if a.focus_theta is not None else "")
            + (f"_adapt{a.adapt_decoder}" if a.adapt_decoder else "")
            + (f"_u{a.updates}" if a.updates != DEFAULTS[a.task]["updates"] else "")
            + (f"_lr{a.lr:g}" if a.lr != signals.LR[a.cond] and a.rule != "local" else ""))

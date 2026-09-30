@@ -218,6 +218,21 @@ class SameLocation(CuedDetection):
         return self.disk_point()
 
 
+class Sector(SameLocation):
+    """The cue (and the target) confined to an angular sector of the disk; distractors anywhere,
+    as on the task. Reading a network on two sectors compares positions inside one network."""
+
+    def __init__(self, *args, centre=0.0, half_width=math.pi / 4, **kwargs):
+        self.centre, self.half_width = centre, half_width
+        super().__init__(*args, **kwargs)
+
+    def positions(self):
+        r = self.target_radius * math.sqrt(self.rng.rand())
+        theta = self.centre + self.half_width * (2.0 * self.rng.rand() - 1.0)
+        pos = (r * math.cos(theta), r * math.sin(theta))
+        return pos, pos, theta, self.quadrant(theta)
+
+
 class PatchStimulus(SameLocation):
     """Stimuli are blurred patches: the written position is re-drawn around the true centre every
     T_avg ms, so a single frame is uninformative and the location has to be averaged over the
@@ -338,6 +353,12 @@ def sameloc(cue, tgt, dstr):
     """A cell of the difficulty grid: cue, target and distractor strengths."""
     return lambda: SameLocation(dt=20, cue_strength=cue, target_strength=tgt,
                                 p_distractor_trial=0.6, distractor_strength=dstr)
+
+
+def sector(centre, half_width, cell=C1):
+    cue, tgt, dstr = cell
+    return lambda: Sector(dt=20, cue_strength=cue, target_strength=tgt, p_distractor_trial=0.6,
+                          distractor_strength=dstr, centre=centre, half_width=half_width)
 
 
 def patch(cell=PATCH_CELL):

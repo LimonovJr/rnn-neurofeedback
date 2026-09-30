@@ -901,6 +901,23 @@ block50() {
     wait
 }
 
+# 51. The magnified target asked for in one sector of positions only (0 deg, +-45), the rest of the
+#     disk kept at its present code; 51e reads each network inside and opposite the sector, so the
+#     comparison is within the network.
+block51() {
+    for net in $BATCH2; do
+        run "b51_focus_net$net" -m experiments.nf --task c1 --cond expand --kappa 2 --net $net             --rep 6 --lr 1e-4 --eval-n 2000 --focus-theta 0 --focus-width 45 --save-at 0,1200             --ckpt-dir nf_c1_steps
+    done
+    wait
+}
+
+block51e() {
+    for nets in 10,11,12 13,14,15 16,17,18 19,20,21 22,23,24; do
+        run "b51e_focus_${nets//,/_}" -m experiments.focus --nets $nets             --out results/focus_c1_${nets//,/_}.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

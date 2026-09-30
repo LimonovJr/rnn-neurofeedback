@@ -321,7 +321,7 @@ DEFAULTS = {"lam": "1", "updates": lambda r: BUDGET[r["task"]], "lr": lambda r: 
             "cosine": "", "axis_increment": "", "refit_decoder": "0", "entropy": "0.05",
             "save_at": "", "track": "", "track_rate": "", "yoke_from": "", "baseline": "batch",
             "batch": "48", "temperature": "1", "track_every": "", "track_step": "",
-            "baseline_decay": ""}
+            "baseline_decay": "", "focus_theta": "", "focus_width": ""}
 # what the published tables were built from, and may pool
 PUBLISHED = {"lam", "eval_n", "train_decoder", "kappa", "shuffle", "explore", "explore_k",
              "optimizer", "all_trials", "fa_cost", "fa_penalty", "operant_reward", "cosine",
