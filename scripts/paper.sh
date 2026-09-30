@@ -918,6 +918,24 @@ block51e() {
     wait
 }
 
+# 52. Closed-loop difficulty after deBettencourt et al. (2015): the target fades within the trial
+#     when the delay decoding of the cued position lapses; supervised learner, networks 10-24.
+#     52y: each network yoked to the next network's recorded strengths.
+block52() {
+    for net in $BATCH2; do
+        run "b52_closed_net$net" -m experiments.closed_loop --net $net --rep 0
+    done
+    wait
+}
+
+block52y() {
+    for net in $BATCH2; do
+        src=$(( net == 24 ? 10 : net + 1 ))
+        run "b52_yoked_net$net" -m experiments.closed_loop --net $net --rep 0             --yoke-from results/closed_loop_closed_net${src}_r0.npy
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
