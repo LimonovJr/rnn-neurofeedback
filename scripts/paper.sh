@@ -831,6 +831,16 @@ block44() {
     wait
 }
 
+# 45. The magnified target as a dose on networks 10-24: kappa 0.5 asks for a compressed code, 1 for
+#     the present one, 1.5 for a larger one; block 40 has kappa 2. The own-threshold curve is read
+#     on 2000 trials only, since every behavioural number is recomputed on the kept states.
+block45() {
+    for kappa in 0.5 1 1.5; do for net in $BATCH2; do
+        run "b45_k${kappa}_net$net" -m experiments.nf --task c1 --cond expand --kappa $kappa             --net $net --rep 6 --lr 1e-4 --eval-n 2000 --save-at 0,1200 --ckpt-dir nf_c1_steps
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
