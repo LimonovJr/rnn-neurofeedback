@@ -1259,14 +1259,17 @@ def rt(args):
             cp = float(r["c"])
             if not c.min() <= cp <= c.max():
                 continue
-            a = arm(r["run"] + "_")
+            # the kappa-dose runs (block 45) share the folder; they are labelled by their kappa
+            k = next((t for t in r["run"].split("_") if t.startswith("k") and t[1:2].isdigit()), "")
+            a = arm(r["run"] + "_") if k in ("", "k2", "k1") and "n2000" not in r["run"]                 else f"expand {k}"
             for key in ("rt", "rt_sd", "d"):
                 pred = np.interp(cp, c[order], [float(branch[i][key]) for i in order])
                 residual[a][key].append(float(r[key]) - pred)
             residual[a]["dc"].append(cp - float(base["c"]))
     print(f"R1: along the criterion line hit RT rises with c on {sum(rising)}/{len(rising)} networks")
     print("arm          n    change of c   RT beyond the line (ms)   RT SD beyond (ms)   d' beyond")
-    for a in ("reward", "control", "control_fa", "joint", "k2", "shuffled"):
+    for a in ("reward", "control", "control_fa", "joint", "k2", "shuffled", "expand k0.5",
+              "expand k1", "expand k1.5"):
         res = residual.get(a)
         if not res:
             continue
