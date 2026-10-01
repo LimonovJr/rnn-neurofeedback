@@ -26,6 +26,7 @@ def main():
     p.add_argument("--nets", required=True)
     p.add_argument("--select-n", type=int, default=1000)
     p.add_argument("--report-n", type=int, default=4000)
+    p.add_argument("--states", default="theta0,reward,control")
     p.add_argument("--out")
     a = p.parse_args()
     a.out = a.out or f"results/psychometric_c1_{a.nets.replace(',', '_')}.csv"
@@ -38,6 +39,8 @@ def main():
     for net in (int(n) for n in a.nets.split(",")):
         for state, name in (("theta0", None), ("reward", f"nf_c1_reward_lam1_n10000_net{net}_r6_u1200.pt"),
                             ("control", f"nf_c1_control_lam1_n10000_lr0.0001_net{net}_r6_u1200.pt")):
+            if state not in a.states.split(","):
+                continue
             model = load(net, head="c1")
             if name:
                 model.load_state_dict(torch.load(CKPT / "nf_c1_steps" / name, weights_only=True)
