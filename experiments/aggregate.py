@@ -1316,7 +1316,15 @@ def repertoire(args):
 
 def psychometric(args):
     """Block 50: the c1 comparison at five target strengths, without retraining."""
-    rows = runs.read(f"{args.results}/psychometric_c1_net*.csv")
+    every = runs.read(f"{args.results}/psychometric_c1_net*.csv")
+    for label, nets in (("networks 0-4", range(0, 5)), ("networks 10-24", range(10, 25))):
+        psychometric_set([r for r in every if int(r["net"]) in nets], label)
+
+
+def psychometric_set(rows, label):
+    if not rows:
+        return
+    print(f"\n{label}")
     print("strength   theta0 best   reward - control: best d'       own d'          AUC")
     for strength in sorted({float(r["strength"]) for r in rows}):
         at = lambda state, key: per_net([r for r in rows if r["state"] == state
@@ -1328,7 +1336,8 @@ def psychometric(args):
             d = [a[n] - b[n] for n in sorted(set(a) & set(b))]
             m, se, p = stats.one_sample(d)
             cells.append(f"{m:+.3f} (p {p:.2f})")
-        print(f"{strength:<9}{np.mean(list(at('theta0', 'best_d').values())):>10.3f}     "
+        start = list(at("theta0", "best_d").values())
+        print(f"{strength:<9}{np.mean(start) if start else float('nan'):>10.3f}     "
               + "   ".join(f"{c:<16}" for c in cells))
 
 
@@ -1376,6 +1385,52 @@ def closed_loop(args):
               f"{pv:>9.4f}{sum(d < 0 for d in diff):>8d}/{len(diff)}")
 
 
+def relocated(args):
+    """Block 54: after closed-loop or yoked training, what the frozen head and a refitted decoder
+    read, how separable the delay code is, and how much behaviour still relies on location."""
+    rows = runs.read(f"{args.results}/relocated_c1_net*.csv")
+    at = {s: {int(r["net"]): r for r in rows if r["state"] == s} for s in ("theta0", "closed", "yoked")}
+    nets = sorted(set(at["theta0"]) & set(at["closed"]) & set(at["yoked"]))
+    print(f"{len(nets)} networks\nmeasure                    theta0    closed     yoked   yoked - closed        p")
+    for key, label in (("frozen_acc", "frozen head, accuracy"), ("refit_acc", "refitted decoder"),
+                       ("crossnobis", "crossnobis"), ("inside_frozen", "refit inside frozen")):
+        v = {s: [float(at[s][n][key]) for n in nets] for s in at}
+        mean, sem, pv = stats.paired(v["yoked"], v["closed"])
+        print(f"{label:<25}{np.mean(v['theta0']):>8.3f}{np.mean(v['closed']):>10.3f}"
+              f"{np.mean(v['yoked']):>10.3f}{mean:>+11.3f} +- {sem:.3f}{pv:>9.4f}")
+    for key in ("refit_acc", "crossnobis"):
+        mean, sem, pv = stats.paired([float(at["yoked"][n][key]) for n in nets],
+                                     [float(at["theta0"][n][key]) for n in nets])
+        print(f"yoked - theta0, {key}: {mean:+.4f} +- {sem:.4f}  p = {pv:.4f}")
+    drop = {s: [float(at[s][n]["best_at_cue"]) - float(at[s][n]["best_task"]) for n in nets]
+            for s in ("closed", "yoked")}
+    for s_ in drop:
+        mean, sem, pv = stats.one_sample(drop[s_])
+        print(f"{s_}: best d' with distractors at the cue minus task {mean:+.3f} +- {sem:.3f} "
+              f"({sum(d < 0 for d in drop[s_])}/{len(nets)} lower)")
+    mean, sem, pv = stats.paired(drop["closed"], drop["yoked"])
+    print(f"closed - yoked in that drop: {mean:+.3f} +- {sem:.3f}  p = {pv:.3f}")
+
+
+def content_or_drift(args):
+    """Post hoc: the magnified target against the shuffled one on the same networks, raw and per
+    unit of weight movement."""
+    rows = runs.read(f"{args.results}/induction_c1_net*.csv")
+    moved = {r["_file"][:-4]: float(r["dW_rec"])
+             for r in runs.read(f"{args.results}/nf_c1_expand_lam1_n10000_k*_net*_r6.csv")}
+    print("networks    k2 best d'   shuffled   k2 - shuffled        p   per unit movement k2 / shuffled")
+    for label, nets in (("10-24", range(10, 25)), ("0-4", range(0, 5)), ("all", range(0, 25))):
+        k2 = {int(r["net"]): r for r in rows if not int(r["shuffle"]) and int(r["net"]) in nets}
+        sh = {int(r["net"]): r for r in rows if int(r["shuffle"]) and int(r["net"]) in nets}
+        both = sorted(set(k2) & set(sh))
+        a = [float(k2[n]["d_best"]) for n in both]
+        b = [float(sh[n]["d_best"]) for n in both]
+        mean, sem, pv = stats.paired(a, b)
+        per = [np.mean([float(x[n]["d_best"]) / moved[x[n]["run"]] for n in both]) for x in (k2, sh)]
+        print(f"{label:<10}{np.mean(a):>+10.3f}{np.mean(b):>+11.3f}{mean:>+10.3f} +- {sem:.3f}"
+              f"{pv:>9.4f}{per[0]:>12.1f} / {per[1]:.1f}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -1389,7 +1444,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "adaptive-split": adaptive_split, "context-optimum": context_optimum,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
-          "closed-loop": closed_loop}
+          "closed-loop": closed_loop, "relocated": relocated, "content-or-drift": content_or_drift}
 
 
 def main():
