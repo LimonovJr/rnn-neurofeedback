@@ -941,7 +941,8 @@ block52y() {
 # 53. Block 50 on networks 10-24: reward and supervised end states at five target strengths.
 block53() {
     for net in $BATCH2; do
-        run "b53_psychometric_net$net" -m experiments.psychometric --nets $net             --states reward,control --out results/psychometric_c1_net$net.csv
+        run "b53_psychometric_net$net" -m experiments.psychometric --nets $net \
+            --states reward,control --out results/psychometric_c1_net$net.csv
     done
     wait
 }
@@ -950,7 +951,8 @@ block53() {
 #     directions the frozen head reads, and does behaviour still use location?
 block54() {
     for net in $BATCH2; do
-        run "b54_relocated_net$net" -m experiments.relocated --nets $net             --out results/relocated_c1_net$net.csv
+        run "b54_relocated_net$net" -m experiments.relocated --nets $net \
+            --out results/relocated_c1_net$net.csv
     done
     wait
 }
