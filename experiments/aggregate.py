@@ -1412,9 +1412,10 @@ def relocated(args):
     print(f"closed - yoked in that drop: {mean:+.3f} +- {sem:.3f}  p = {pv:.3f}")
 
 
-def content_or_drift(args):
-    """Post hoc: the magnified target against the shuffled one on the same networks, raw and per
-    unit of weight movement."""
+def magnified_vs_shuffled(args):
+    """Post hoc: a target that sharpens the code against one that scrambles it, on the same
+    networks, raw and per unit of weight movement. The shuffled target degrades the code, so this
+    is not a comparison against plain drift."""
     rows = runs.read(f"{args.results}/induction_c1_net*.csv")
     moved = {r["_file"][:-4]: float(r["dW_rec"])
              for r in runs.read(f"{args.results}/nf_c1_expand_lam1_n10000_k*_net*_r6.csv")}
@@ -1444,7 +1445,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "adaptive-split": adaptive_split, "context-optimum": context_optimum,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
-          "closed-loop": closed_loop, "relocated": relocated, "content-or-drift": content_or_drift}
+          "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled}
 
 
 def main():
