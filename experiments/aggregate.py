@@ -1332,6 +1332,50 @@ def psychometric(args):
               + "   ".join(f"{c:<16}" for c in cells))
 
 
+def focus(args):
+    """Block 51e: the magnified target applied in one sector, each network read inside the sector
+    and opposite it; the change inside minus the change opposite is the within-network effect."""
+    rows = runs.read(f"{args.results}/focus_c1_*.csv")
+    nets = sorted({int(r["net"]) for r in rows})
+    at = {(int(r["net"]), int(r["upd"])): r for r in rows}
+    nets = [n for n in nets if (n, 0) in at and (n, 1200) in at]
+    print(f"{len(nets)} networks; change from the start to the end")
+    print("measure          inside   opposite   inside - opposite        p    inside larger")
+    for key, label in (("gain", "head gain"), ("best", "best-threshold d'"), ("auc", "AUC"),
+                       ("own", "own-threshold d'"), ("offset", "best offset")):
+        change = {side: [float(at[(n, 1200)][f"{side}_{key}"]) - float(at[(n, 0)][f"{side}_{key}"])
+                         for n in nets] for side in ("inside", "opposite")}
+        diff = [a - b for a, b in zip(change["inside"], change["opposite"])]
+        mean, sem, pv = stats.one_sample(diff)
+        print(f"{label:<17}{np.mean(change['inside']):>+7.3f}{np.mean(change['opposite']):>+10.3f}"
+              f"{mean:>+12.3f} +- {sem:.3f}{pv:>10.4f}{sum(d > 0 for d in diff):>10d}/{len(diff)}")
+
+
+def closed_loop(args):
+    """Block 52: supervised training under closed-loop difficulty against the yoked control."""
+    rows = runs.read(f"{args.results}/closed_loop_*_net*_r0.csv")
+    arm_rows = {k: {int(r["net"]): r for r in rows if r["kind"] == k} for k in ("closed", "yoked")}
+    nets = sorted(set(arm_rows["closed"]) & set(arm_rows["yoked"]))
+    print(f"{len(nets)} networks with both arms")
+    measures = (("decoding error, change", lambda r: float(r["err_end"]) - float(r["err_start"])),
+                ("late lapse rate", lambda r: float(r["lapse_late"])),
+                ("late target strength", lambda r: float(r["strength_late"])),
+                ("hit rate, end", lambda r: float(r["hit_end"])),
+                ("false-alarm rate, end", lambda r: float(r["fa_end"])),
+                ("own-threshold d', change", lambda r: float(r["own_d_end"]) - float(r["own_d_start"])),
+                ("best-threshold d', change", lambda r: float(r["best_d_end"]) - float(r["best_d_start"])),
+                ("AUC, change", lambda r: float(r["auc_end"]) - float(r["auc_start"])),
+                ("best offset, change", lambda r: float(r["offset_end"]) - float(r["offset_start"])))
+    print("measure                      closed     yoked   closed - yoked        p   closed lower")
+    for label, value in measures:
+        c = [value(arm_rows["closed"][n]) for n in nets]
+        y = [value(arm_rows["yoked"][n]) for n in nets]
+        diff = [a - b for a, b in zip(c, y)]
+        mean, sem, pv = stats.one_sample(diff)
+        print(f"{label:<27}{np.mean(c):>+8.3f}{np.mean(y):>+10.3f}{mean:>+10.3f} +- {sem:.3f}"
+              f"{pv:>9.4f}{sum(d < 0 for d in diff):>8d}/{len(diff)}")
+
+
 TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "degradation": degradation, "patch": patch, "competence": competence,
           "nf-c1": nf_c1, "nf-context": nf_context, "lambda": lam, "labelfree": labelfree,
@@ -1344,7 +1388,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "calibration": calibration, "passage": passage, "adaptive": adaptive,
           "adaptive-split": adaptive_split, "context-optimum": context_optimum,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
-          "repertoire": repertoire, "psychometric": psychometric}
+          "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
+          "closed-loop": closed_loop}
 
 
 def main():
