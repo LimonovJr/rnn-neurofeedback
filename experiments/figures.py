@@ -331,8 +331,62 @@ def context_deficit(args):
     save(fig, args.out, "fig6_context_deficit")
 
 
+def location_and_dose(args):
+    """Location carries part of c1's discriminability, and a magnified positional code moves the
+    criterion in proportion to its gain without buying any."""
+    loc = runs.read(f"{args.results}/location_c1_*.csv")
+    dose_rows = [r for r in runs.read(f"{args.results}/induction_dose_c1_net*.csv")
+                 if not int(r["shuffle"])]
+    if not loc or not dose_rows:
+        print("location-dose: runs missing")
+        return
+    fig, axes = plt.subplots(1, 4, figsize=(9.4, 2.5))
+    ax = axes[0]
+    x = 0
+    ticks = []
+    for state, name in (("theta0", "start"), ("control", "trained")):
+        base = per_net([r for r in loc if r["state"] == state and r["variant"] == "task"],
+                       lambda r: float(r["best_d"]))
+        for variant, colour in (("at_cue", COLOURS["reward"]), ("opposite", COLOURS["control"])):
+            v = per_net([r for r in loc if r["state"] == state and r["variant"] == variant],
+                        lambda r: float(r["best_d"]))
+            dots(ax, x, [v[n] - base[n] for n in sorted(base) if n in v], colour, jitter=0.07,
+                 label={"at_cue": "at the cue", "opposite": "opposite the cue"}[variant]
+                 if state == "theta0" else None)
+            ticks.append((x, name))
+            x += 1
+        x += 0.5
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks([0.5, 3.0], ["start", "trained"])
+    ax.set_ylabel("best-threshold d′ − task")
+    ax.set_title("Distractors moved")
+    ax.set_ylim(-1.1, 0.85)
+    ax.legend(fontsize=6, loc="upper left", ncol=2, columnspacing=0.8, handletextpad=0.2)
+
+    kappas = sorted({float(r["kappa"]) for r in dose_rows})
+    nets = sorted({int(r["net"]) for r in dose_rows})
+    for ax, key, label, title in (
+            (axes[1], "d_offset", "best-threshold shift", "Criterion follows the gain"),
+            (axes[2], "d_hold_sd", "Δ hold spread (SD)", "…through the margin's spread"),
+            (axes[3], "d_best", "Δ best-threshold d′", "No discriminability")):
+        for n in nets:
+            sel = sorted((r for r in dose_rows if int(r["net"]) == n), key=lambda r: float(r["kappa"]))
+            ax.plot([float(r["kappa"]) for r in sel], [float(r[key]) for r in sel], "-",
+                    color=COLOURS["k2"], lw=0.5, alpha=0.35)
+        mean = [np.mean([float(r[key]) for r in dose_rows if float(r["kappa"]) == k]) for k in kappas]
+        ax.plot(kappas, mean, "o-", color="k", ms=3.5, lw=1.2)
+        ax.axhline(0, color="k", lw=0.5)
+        ax.set_xticks(kappas, [f"{k:g}" for k in kappas])
+        ax.set_xlabel("κ asked of the position head")
+        ax.set_ylabel(label)
+        ax.set_title(title)
+    fig.tight_layout()
+    save(fig, args.out, "fig7_location_dose")
+
+
 FIGURES = {"headroom": headroom, "one-roc": one_roc, "calibration": calibration,
-           "routes": routes, "adaptive": adaptive, "context-deficit": context_deficit}
+           "routes": routes, "adaptive": adaptive, "context-deficit": context_deficit,
+           "location-dose": location_and_dose}
 
 
 def main():
