@@ -923,7 +923,8 @@ block51e() {
 #     52y: each network yoked to the next network's recorded strengths.
 block52() {
     for net in $BATCH2; do
-        run "b52_closed_net$net" -m experiments.closed_loop --net $net --rep 0
+        run "b52_closed_net$net" -m experiments.closed_loop --net $net --rep 0 \
+            --sweep-n 1500,6000
     done
     wait
 }
@@ -931,7 +932,8 @@ block52() {
 block52y() {
     for net in $BATCH2; do
         src=$(( net == 24 ? 10 : net + 1 ))
-        run "b52_yoked_net$net" -m experiments.closed_loop --net $net --rep 0             --yoke-from results/closed_loop_closed_net${src}_r0.npy
+        run "b52_yoked_net$net" -m experiments.closed_loop --net $net --rep 0 \
+            --sweep-n 1500,6000 --yoke-from results/closed_loop_closed_net${src}_r0.npy
     done
     wait
 }
