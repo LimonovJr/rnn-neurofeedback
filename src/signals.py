@@ -126,20 +126,23 @@ def expand_step(kappa, shuffle=False, focus=None):
     it separates the cost of improving the representation from the cost of training against a
     representational loss at all.
 
-    `focus` = (angle, half-width) in radians asks for kappa only on trials cued inside that sector
-    and for the present code (kappa 1) elsewhere, so the rest of the disk is a control inside the
-    same network."""
+    `focus` = (angle, half-width) in radians applies the loss only to trials cued inside that
+    sector. Trials cued elsewhere receive no signal at all, so the rest of the disk is an untrained
+    control inside the same network."""
     def step(model, batch):
         x, _, _, _, xy_true, delay_mask, _ = batch
         _, _, h = model(x, return_hidden=True)
         if shuffle:
             xy_true = xy_true[torch.randperm(xy_true.shape[0], device=xy_true.device)]
-        gain = kappa
-        if focus is not None:
+        if focus is None:
+            err = positional_error(model, h, kappa * xy_true, delay_mask)
+        else:
             angle = torch.atan2(xy_true[:, 0, 1], xy_true[:, 0, 0])
-            inside = torch.remainder(angle - focus[0] + math.pi, 2 * math.pi) - math.pi
-            gain = torch.where(inside.abs() <= focus[1], kappa, 1.0)[:, None, None]
-        err = positional_error(model, h, gain * xy_true, delay_mask)
+            away = torch.remainder(angle - focus[0] + math.pi, 2 * math.pi) - math.pi
+            inside = (away.abs() <= focus[1]).float()
+            sq = ((model.decode_xy(h) - kappa * xy_true) ** 2).sum(-1)
+            per_trial = (sq * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
+            err = (per_trial * inside).sum() / inside.sum().clamp_min(1)
         return err, {"expand_err": err.detach()}
     return step
 

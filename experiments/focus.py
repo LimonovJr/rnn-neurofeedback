@@ -3,10 +3,11 @@ inside the same network.
 
 Human decoded-neurofeedback results are convincing when the effect is specific: the trained
 orientation improves and the untrained ones, in the same person, serve as the control. Here the
-magnified target is asked for only on trials cued inside one sector (`nf --focus-theta`), and each
-network is swept on trials cued inside that sector and on trials cued in the opposite one, at the
-start and at the end. The difference of the two changes removes everything that differs between
-networks, which is most of the variance in the between-network comparisons.
+magnified target is applied only to trials cued inside one sector (`nf --focus-theta`); trials cued
+elsewhere get no signal. Each network is swept on trials cued inside that sector and on trials cued
+in the opposite one, at the start and at the end. The difference of the two changes removes
+everything that differs between networks, which is most of the variance in the between-network
+comparisons.
 
     python -m experiments.focus --nets 10,11
 """
@@ -19,7 +20,8 @@ import os
 import numpy as np
 import torch
 
-from src import behaviour, runs, tasks
+from experiments.induction import head_fit
+from src import behaviour, runs, signals, tasks, trials
 from src.model import CKPT, load
 
 
@@ -30,8 +32,12 @@ def read(model, centre, width, n_select, n_report):
                                       n_report)
         own = next(pt for pt in s["roc"].split("|") if float(pt.split(":")[0]) == 0.0)
         hit, fa = (float(v) for v in own.split(":")[1:3])
+        # the manipulation check: the head's gain on trials cued in this sector
+        batches = [trials.batch(tasks.sector(c, width), 128, 20, window_ms=signals.WINDOW_MS)
+                   for _ in range(4)]
         out.update({f"{name}_best": s["d"], f"{name}_auc": s["auc"], f"{name}_offset": s["offset"],
-                    f"{name}_own": round(behaviour.dprime(hit, fa), 4)})
+                    f"{name}_own": round(behaviour.dprime(hit, fa), 4),
+                    f"{name}_gain": round(head_fit(model, batches)[0], 4)})
     return out
 
 

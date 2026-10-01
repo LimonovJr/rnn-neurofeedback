@@ -901,8 +901,8 @@ block50() {
     wait
 }
 
-# 51. The magnified target asked for in one sector of positions only (0 deg, +-45), the rest of the
-#     disk kept at its present code; 51e reads each network inside and opposite the sector, so the
+# 51. The magnified target applied only to trials cued in one sector (0 deg, +-45); the rest of the
+#     disk gets no signal. 51e reads each network inside and opposite the sector, so the
 #     comparison is within the network.
 block51() {
     for net in $BATCH2; do

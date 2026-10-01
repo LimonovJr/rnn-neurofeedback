@@ -343,8 +343,8 @@ def main():
                    help="how slowly the running baseline follows the batches")
     p.add_argument("--batch", type=int, default=signals.BATCH, help="trials per reward update")
     p.add_argument("--focus-theta", type=float,
-                   help="expand: ask for kappa only on trials cued within --focus-width degrees of "
-                        "this angle (degrees), the present code elsewhere")
+                   help="expand: apply the loss only to trials cued within --focus-width degrees of "
+                        "this angle (degrees); trials cued elsewhere get no signal")
     p.add_argument("--focus-width", type=float, default=45.0)
     p.add_argument("--temperature", type=float, default=1.0,
                    help="divide the reward policy's logits by this while training")
