@@ -1,5 +1,5 @@
-"""The figures of the report, drawn from the same per-run CSVs as the tables in `aggregate`, so a
-figure and the table it illustrates cannot disagree.
+"""The figures of the paper, drawn from the same per-run CSVs as the tables in `aggregate`, so a
+figure and the table it illustrates cannot disagree. Six main figures and one supplementary.
 
     python -m experiments.figures                  # every figure into results/figures
     python -m experiments.figures calibration      # one of them
@@ -113,10 +113,42 @@ def mean_roc(rows, grid=np.linspace(0, 1, 101)):
     return grid, mean, np.mean([np.mean(v, 0) for v in own.values()], 0)
 
 
+def strength_panel(ax, args):
+    """Reward minus supervision against target strength: equal at the best threshold, reversing at
+    the decoder's own."""
+    rows = [r for r in runs.read(f"{args.results}/psychometric_c1_net*.csv")
+            if r["state"] in ("reward", "control")]
+    strengths = sorted({float(r["strength"]) for r in rows})
+    for (lo, hi), marker, fill, label in (((10, 25), "o", True, "networks 10–24"),
+                                          ((0, 5), "s", False, "networks 0–4")):
+        for key, colour, name in (("own_d", COLOURS["reward"], "decoder's own threshold"),
+                                  ("best_d", "0.25", "best threshold")):
+            mean, sem = [], []
+            for strength in strengths:
+                v = {a: per_net([r for r in rows if r["state"] == a and lo <= int(r["net"]) < hi
+                                 and float(r["strength"]) == strength], lambda r: float(r[key]))
+                     for a in ("reward", "control")}
+                d = [v["reward"][n] - v["control"][n] for n in sorted(set(v["reward"]) & set(v["control"]))]
+                mean.append(np.mean(d))
+                sem.append(np.std(d, ddof=1) / np.sqrt(len(d)))
+            ax.errorbar(strengths, mean, yerr=sem, fmt=marker + ("-" if fill else ":"), color=colour,
+                        ms=4, lw=1.1 if fill else 0.8, capsize=1.5,
+                        mfc=colour if fill else "white", label=f"{name}, {label}")
+    ax.axhline(0, color="k", lw=0.5)
+    ax.axvline(0.9, color="0.8", lw=0.8, zorder=0)
+    ax.set_xticks(strengths, [f"{v:g}" for v in strengths])
+    ax.set_xlabel("target strength (trained at 0.9)")
+    ax.set_ylabel("reward − supervision (d′)")
+    ax.set_title("The winner depends on the test")
+    ax.legend(fontsize=5.5, loc="upper left")
+
+
 def one_roc(args):
-    """Reward and supervision on the same ROC on c1, not on context (networks 10-24)."""
+    """Reward and supervision on the same ROC on c1, not on context (networks 10-24); and across
+    target strengths the same discriminability with an own-threshold difference that reverses."""
     nets = set(range(10, 25))
-    fig, axes = plt.subplots(1, 2, figsize=(5.8, 2.8))
+    fig, axes = plt.subplots(1, 3, figsize=(9.2, 2.8), gridspec_kw={"width_ratios": [1, 1, 1.25]})
+    strength_panel(axes[2], args)
     for ax, task, title in zip(axes, ("c1", "context"), ("c1: one ROC", "context: two ROCs")):
         rows = [r for r in swept(args, task) if int(r["net"]) in nets and int(r["rep"]) in (0, 1)]
         if not rows:
@@ -200,7 +232,7 @@ def calibration(args):
     save(fig, args.out, "fig3_calibration")
 
 
-def routes(args):
+def routes(axes, args):
     """Three signals move the best threshold three ways: reward by the level of the release margin
     during the hold, the magnified target by its spread, the shuffled target by quieting the
     population and shrinking the response peak; the mean logit does not say which."""
@@ -214,8 +246,6 @@ def routes(args):
     arms = ("reward", "control", "k2", "shuffled")
     measures = (("d_hold_level", "hold level"), ("d_hold_sd", "hold spread (SD)"),
                 ("d_resp_max", "response peak"), ("d_offset", "best threshold"))
-    fig, axes = plt.subplots(1, 5, figsize=(9.6, 2.3),
-                             gridspec_kw={"width_ratios": [1, 1, 1, 1, 1.25]})
     for ax, (key, label) in zip(axes, measures):
         for i, a in enumerate(arms):
             for net_set, marker, dx in (((0, 5), "o", -0.13), ((10, 25), "s", 0.13)):
@@ -241,8 +271,6 @@ def routes(args):
     ax.set_ylabel("best-threshold shift")
     ax.set_title("Qualitative, not quantitative")
     axes[3].text(0.02, 0.02, "○ nets 0–4   □ nets 10–24", fontsize=6, transform=axes[3].transAxes)
-    fig.tight_layout()
-    save(fig, args.out, "fig4_routes")
 
 
 def tracked_runs(args):
@@ -299,7 +327,7 @@ def adaptive(args):
     axes[2].set_ylabel("end AUC")
     axes[2].set_title("No pace helps")
     fig.tight_layout()
-    save(fig, args.out, "fig5_adaptive")
+    save(fig, args.out, "figS1_adaptive")
 
 
 def context_deficit(args):
@@ -328,19 +356,15 @@ def context_deficit(args):
     ax.set_xticks(range(len(labels)), labels, fontsize=6.5)
     ax.set_ylabel("end AUC")
     ax.set_title("Context: reward's deficit and its estimate")
-    save(fig, args.out, "fig6_context_deficit")
+    save(fig, args.out, "fig4_context_deficit")
 
 
-def location_and_dose(args):
+def location_and_dose(axes, args):
     """Location carries part of c1's discriminability, and a magnified positional code moves the
     criterion in proportion to its gain without buying any."""
     loc = runs.read(f"{args.results}/location_c1_*.csv")
     dose_rows = [r for r in runs.read(f"{args.results}/induction_dose_c1_net*.csv")
                  if not int(r["shuffle"])]
-    if not loc or not dose_rows:
-        print("location-dose: runs missing")
-        return
-    fig, axes = plt.subplots(1, 4, figsize=(9.4, 2.5))
     ax = axes[0]
     x = 0
     ticks = []
@@ -368,7 +392,7 @@ def location_and_dose(args):
     for ax, key, label, title in (
             (axes[1], "d_offset", "best-threshold shift", "Criterion follows the gain"),
             (axes[2], "d_hold_sd", "Δ hold spread (SD)", "…through the margin's spread"),
-            (axes[3], "d_best", "Δ best-threshold d′", "No discriminability")):
+            (axes[3], "d_best", "Δ best-threshold d′", "Discriminability falls")):
         for n in nets:
             sel = sorted((r for r in dose_rows if int(r["net"]) == n), key=lambda r: float(r["kappa"]))
             ax.plot([float(r["kappa"]) for r in sel], [float(r[key]) for r in sel], "-",
@@ -380,13 +404,82 @@ def location_and_dose(args):
         ax.set_xlabel("κ asked of the position head")
         ax.set_ylabel(label)
         ax.set_title(title)
+
+
+def representational(args):
+    """Targets aimed at the representation: the code behaviour uses, the dose, and the routes by
+    which signals reach the criterion."""
+    # two rows with different numbers of panels: each row is laid out on its own
+    fig = plt.figure(figsize=(10.4, 5.4), layout="constrained")
+    top, bottom = fig.subfigures(2, 1, hspace=0.06)
+    location_and_dose(top.subplots(1, 4), args)
+    routes(bottom.subplots(1, 5, gridspec_kw={"width_ratios": [1, 1, 1, 1, 1.25]}), args)
+    save(fig, args.out, "fig5_representational")
+
+
+def wrong_sign(args):
+    """After task training the code is more separable and discriminability is higher, while the
+    decoder fitted at the start reads it worse: block 52's two arms read as in block 54."""
+    rows = runs.read(f"{args.results}/relocated_c1_net*.csv")
+    loops = runs.read(f"{args.results}/closed_loop_*_net*_r0.csv")
+    if not rows or not loops:
+        print("wrong-sign: runs missing")
+        return
+    states = (("theta0", "start"), ("closed", "closed\nloop"), ("yoked", "yoked"))
+    value = lambda state, key: per_net([r for r in rows if r["state"] == state],
+                                       lambda r: float(r[key]))
+    fig, axes = plt.subplots(1, 4, figsize=(9.6, 2.5))
+    ax = axes[0]
+    for key, colour, dx, label in (("frozen_acc", "0.35", -0.17, "decoder fitted at the start"),
+                                   ("refit_acc", COLOURS["k2"], 0.17, "decoder refitted")):
+        for i, (state, _) in enumerate(states):
+            dots(ax, i + dx, list(value(state, key).values()), colour, jitter=0.05, mean_dx=0.0,
+                 label=label if i == 0 else None)
+    ax.axhline(0.125, color="k", lw=0.5, ls=":")
+    ax.set_xticks(range(3), [name for _, name in states])
+    ax.set_ylim(0.08, 0.95)
+    ax.set_ylabel("accuracy, 8 position bins")
+    ax.set_title("What the fixed decoder reports")
+    ax.legend(fontsize=6, loc="upper left", handletextpad=0.2)
+
+    ax = axes[1]
+    for i, (state, _) in enumerate(states):
+        dots(ax, i, list(value(state, "crossnobis").values()), COLOURS["k2"], jitter=0.06)
+    ax.set_xticks(range(3), [name for _, name in states])
+    ax.set_ylabel("crossnobis of the delay code")
+    ax.set_title("…what happened to the code")
+
+    ax = axes[2]
+    for i, kind in enumerate(("closed", "yoked")):
+        sel = [r for r in loops if r["kind"] == kind]
+        dots(ax, i, [float(r["best_d_end"]) - float(r["best_d_start"]) for r in sel],
+             COLOURS["control"], jitter=0.06)
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(range(2), ["closed\nloop", "yoked"])
+    ax.set_xlim(-0.6, 1.6)
+    ax.set_ylabel("Δ best-threshold d′")
+    ax.set_title("…and to discriminability")
+
+    ax = axes[3]
+    start = [r for r in runs.read(f"{args.results}/location_c1_*.csv")
+             if r["state"] == "theta0" and int(r["net"]) >= 10]
+    base = per_net([r for r in start if r["variant"] == "task"], lambda r: float(r["best_d"]))
+    moved = per_net([r for r in start if r["variant"] == "at_cue"], lambda r: float(r["best_d"]))
+    dots(ax, 0, [moved[n] - base[n] for n in sorted(base) if n in moved], "0.35", jitter=0.06)
+    for i, state in enumerate(("closed", "yoked"), 1):
+        dots(ax, i, [float(r["best_at_cue"]) - float(r["best_task"]) for r in rows
+                     if r["state"] == state], "0.35", jitter=0.06)
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(range(3), [name for _, name in states])
+    ax.set_ylabel("best d′, distractors at the cue − task")
+    ax.set_title("Behaviour still uses location")
     fig.tight_layout()
-    save(fig, args.out, "fig7_location_dose")
+    save(fig, args.out, "fig6_wrong_sign")
 
 
 FIGURES = {"headroom": headroom, "one-roc": one_roc, "calibration": calibration,
-           "routes": routes, "adaptive": adaptive, "context-deficit": context_deficit,
-           "location-dose": location_and_dose}
+           "context-deficit": context_deficit, "representational": representational,
+           "wrong-sign": wrong_sign, "adaptive": adaptive}
 
 
 def main():
