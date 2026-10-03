@@ -53,13 +53,18 @@ def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu", sampl
     return dict(d=d, hit=hit, fa=fa, **{k: counts.get(k, 0) / max(len(tr), 1) for k in OUTCOMES})
 
 
-def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False):
+def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False, coarse=None):
     """The best the frozen decoder can do by moving its release threshold alone: the offset on the
     release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw
     so the choice does not flatter the number it is reported with. Nothing is trained and the bias
     is put back. Every coarse point is kept, with the share of each outcome, so the threshold that
-    is best for any payoff can be read off afterwards."""
+    is best for any payoff can be read off afterwards.
+
+    `coarse` replaces the default grid of offsets. A learner that ends far on the conservative side
+    needs offsets beyond +4 before its curve reaches its peak; on a grid that stops short, the hull
+    joins the last point to (1, 1) by a line the network cannot reach and the area is too small."""
     bias = model.b_out.detach().clone()
+    offsets = COARSE if coarse is None else np.asarray(coarse, dtype=float)
 
     def at(offset, n):
         with torch.no_grad():
@@ -67,8 +72,8 @@ def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False):
             model.b_out[1] += offset
         return measure_outcomes(model, env_fn, n=n, score=score, sampled=sampled)
 
-    coarse = [at(offset, n_select) for offset in COARSE]
-    centre = float(COARSE[int(np.argmax([c["d"] for c in coarse]))])
+    coarse = [at(offset, n_select) for offset in offsets]
+    centre = float(offsets[int(np.argmax([c["d"] for c in coarse]))])
     grid = centre + FINE
     fine = [at(offset, n_select)["d"] for offset in grid]
     best = float(grid[int(np.argmax(fine))])
@@ -86,8 +91,8 @@ def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False):
         hull.append(point)
     auc = sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(hull, hull[1:]))
     roc = "|".join(f"{o:g}:" + ":".join(f"{c[k]:.4f}" for k in ("hit", "fa") + OUTCOMES)
-                   for o, c in zip(COARSE, coarse))
-    return dict(offset=best, d=round(d, 4), edge=int(centre in (COARSE[0], COARSE[-1])),
+                   for o, c in zip(offsets, coarse))
+    return dict(offset=best, d=round(d, 4), edge=int(centre in (offsets[0], offsets[-1])),
                 auc=round(auc, 4), roc=roc)
 
 

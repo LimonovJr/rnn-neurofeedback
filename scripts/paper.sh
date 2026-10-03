@@ -957,6 +957,27 @@ block54() {
     wait
 }
 
+# 55. Location with a control that keeps the distractors' distances from the centre: every
+#     distractor mirrored through the centre from the cue, on the start, the supervised end, and
+#     the closed-loop and yoked end states.
+block55() {
+    for net in $READ_NETS; do
+        run "b55_mirror_net$net" -m experiments.location --nets $net --variants mirror \
+            --conds control,closed,yoked --out results/location_mirror_c1_net$net.csv
+    done
+    wait
+}
+
+# 56. The context end states swept to +12: on the default grid the reward learner's curve stops
+#     before its peak.
+block56() {
+    for net in $NETS; do
+        run "b56_wide_net$net" -m experiments.wide_sweep --nets $net \
+            --out results/wide_sweep_context_net$net.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

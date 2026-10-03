@@ -10,11 +10,15 @@ cue at all:
 - `at_cue`: every distractor at the cued position, so location no longer tells them apart;
 - `opposite`: every distractor at the edge of the disk opposite the cue, so location tells them
   apart as well as it can;
+- `mirror`: every distractor at the cue's own distance from the centre, on the opposite side. Like
+  `opposite` it keeps location informative, but it leaves the distractors' distances from the
+  centre as they are on the task; `opposite` puts them all at the edge, where the pretraining
+  stimuli were, which is a change of its own;
 - `no_cue`: the cue is not shown (strength 0), so there is no position to hold. This one is also
   an input the network never saw after pretraining, which the other two are not.
 
-The drop of best-threshold d' from the task to `at_cue` is the part of discriminability carried by
-location.
+The drop of best-threshold d' from `mirror` to `at_cue` is the part of discriminability carried
+by location: both change where the distractors fall, and only one removes the information.
 
     python -m experiments.location --nets 0,1,2
 """
@@ -49,21 +53,30 @@ class Opposite(CueLocked):
         return (r * math.cos(theta), r * math.sin(theta)), theta
 
 
+class Mirror(CueLocked):
+    def distractor_position(self, cue_theta):
+        (x, y), theta = self._cue
+        return (-x, -y), theta + math.pi
+
+
 def variant(cls, cue=CUE):
     return lambda: cls(dt=20, cue_strength=cue, target_strength=TARGET, p_distractor_trial=0.6,
                        distractor_strength=DISTRACTOR)
 
 
 VARIANTS = {"task": variant(tasks.SameLocation), "at_cue": variant(CueLocked),
-            "opposite": variant(Opposite), "no_cue": variant(tasks.SameLocation, cue=0.0)}
+            "opposite": variant(Opposite), "no_cue": variant(tasks.SameLocation, cue=0.0),
+            "mirror": variant(Mirror)}
 
 
 def states(net, conds):
     yield "theta0", None
-    names = {"control": f"nf_c1_control_lam1_n10000_lr0.0001_net{net}_r6_u1200.pt",
-             "reward": f"nf_c1_reward_lam1_n10000_net{net}_r6_u1200.pt"}
+    names = {"control": f"nf_c1_steps/nf_c1_control_lam1_n10000_lr0.0001_net{net}_r6_u1200.pt",
+             "reward": f"nf_c1_steps/nf_c1_reward_lam1_n10000_net{net}_r6_u1200.pt",
+             "closed": f"closed_loop/closed_loop_closed_net{net}_r0_u1200.pt",
+             "yoked": f"closed_loop/closed_loop_yoked_net{net}_r0_u1200.pt"}
     for cond in conds:
-        path = CKPT / "nf_c1_steps" / names[cond]
+        path = CKPT / names[cond]
         if path.exists():
             yield cond, path
 
@@ -72,6 +85,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--nets", required=True)
     p.add_argument("--conds", default="control", help="trained end states to read besides theta0")
+    p.add_argument("--variants", default="task,at_cue,opposite,no_cue")
     p.add_argument("--select-n", type=int, default=1000)
     p.add_argument("--report-n", type=int, default=4000)
     p.add_argument("--out")
@@ -90,7 +104,8 @@ def main():
                 model.load_state_dict(torch.load(path, weights_only=True)["state_dict"],
                                       strict=False)
             model.eval()
-            for name, env_fn in VARIANTS.items():
+            for name in a.variants.split(","):
+                env_fn = VARIANTS[name]
                 s = behaviour.threshold_sweep(model, env_fn, behaviour.detection, a.select_n,
                                               a.report_n)
                 own = next(pt for pt in s["roc"].split("|") if float(pt.split(":")[0]) == 0.0)
