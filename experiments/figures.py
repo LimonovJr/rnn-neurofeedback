@@ -101,16 +101,21 @@ def hull(points):
 
 
 def mean_roc(rows, grid=np.linspace(0, 1, 101)):
-    """Each network's hull, averaged vertically over false-alarm rates, and the mean point at the
-    decoder's own threshold."""
-    curves, own = defaultdict(list), defaultdict(list)
+    """Two views of the same sweeps, averaged over networks. The swept curve is the (false alarm,
+    hit) point at each offset in offset order, so it passes through the point at the decoder's own
+    threshold; at the liberal end releases turn into aborts and it folds back. The hull is the
+    frontier the AUC is taken under, averaged vertically over false-alarm rates."""
+    curves, trace = defaultdict(list), defaultdict(lambda: defaultdict(list))
     for r in rows:
         pts = roc_points(r["roc_end"])
         h = hull([(fa, hit) for _, hit, fa, *_ in pts])
         curves[int(r["net"])].append(np.interp(grid, h[:, 0], h[:, 1]))
-        own[int(r["net"])].append(next((fa, hit) for o, hit, fa, *_ in pts if o == 0.0))
-    mean = np.mean([np.mean(v, 0) for v in curves.values()], 0)
-    return grid, mean, np.mean([np.mean(v, 0) for v in own.values()], 0)
+        for o, hit, fa, *_ in pts:
+            trace[o][int(r["net"])].append((fa, hit))
+    offsets = sorted(trace)
+    swept_curve = np.array([np.mean([np.mean(v, 0) for v in trace[o].values()], 0) for o in offsets])
+    frontier = np.mean([np.mean(v, 0) for v in curves.values()], 0)
+    return grid, frontier, swept_curve, swept_curve[offsets.index(0.0)]
 
 
 def strength_panel(ax, args):
@@ -155,9 +160,10 @@ def one_roc(args):
             ax.set_title(f"{task}: no runs")
             continue
         for cond in ("control", "reward"):
-            grid, curve, own = mean_roc([r for r in rows if r["cond"] == cond])
-            ax.plot(grid, curve, "-", color=COLOURS[cond], lw=1.2, label=NAMES[cond])
-            ax.plot(*own, "o", color=COLOURS[cond], ms=6, mec="k", mew=0.6)
+            grid, frontier, curve, own = mean_roc([r for r in rows if r["cond"] == cond])
+            ax.plot(grid, frontier, "--", color=COLOURS[cond], lw=0.8, alpha=0.75)
+            ax.plot(curve[:, 0], curve[:, 1], "-", color=COLOURS[cond], lw=1.3, label=NAMES[cond])
+            ax.plot(*own, "o", color=COLOURS[cond], ms=6, mec="k", mew=0.6, zorder=5)
         ax.plot([0, 1], [0, 1], ":", color="0.6", lw=0.8)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
@@ -166,8 +172,8 @@ def one_roc(args):
         ax.set_ylabel("hit rate")
         ax.set_title(title)
     axes[0].legend(loc="lower right", fontsize=7)
-    axes[1].text(0.98, 0.04, "circles: the decoder's own threshold", ha="right", fontsize=6.5,
-                 transform=axes[1].transAxes)
+    axes[1].text(0.98, 0.25, "solid: swept curve\ndashed: upper hull\ncircle: own threshold",
+                 ha="right", va="bottom", fontsize=6.5, transform=axes[1].transAxes)
     fig.tight_layout()
     save(fig, args.out, "fig2_one_roc")
 
