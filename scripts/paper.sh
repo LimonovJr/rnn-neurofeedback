@@ -978,6 +978,16 @@ block56() {
     wait
 }
 
+# 57. After the magnified and the shuffled target: is the lost discriminability lost from the
+#     network, or from the frozen decision read-out? A fresh read-out is fitted on each end
+#     state with the recurrent weights frozen.
+block57() {
+    for net in $READ_NETS; do
+        run "b57_access_net$net" -m experiments.access --nets $net \n            --states theta0,control,k2,shuffled --select-n 1000 --report-n 4000 \n            --out results/access_c1_net$net.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

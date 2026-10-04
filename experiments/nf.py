@@ -54,6 +54,18 @@ def adapt_decoder(model, env_fn, steps, lr):
         p.requires_grad_(trainable[id(p)])
 
 
+def refit_decoder(model, env_fn, net, updates):
+    """A fresh decision read-out, fitted on the frozen state by read-out-only supervised training
+    (the instrument's arm A), then frozen: the decoder a calibration session would produce."""
+    torch.manual_seed(1000 + net)
+    with torch.no_grad():
+        model.W_out.normal_(0.0, 1.0 / np.sqrt(model.W_out.shape[1]))
+        model.W_out.mul_(model.out_mask)
+        model.b_out.zero_()
+    adapt_decoder(model, env_fn, updates, 1e-3)
+    model.eval()
+
+
 def policy_shift(start, end, env_fn, n=256):
     """How far the run moved the network's policy on the task it trained on: the KL from the
     starting release probabilities to the final ones, per real time step. On-policy reinforcement
@@ -77,15 +89,8 @@ def run(a):
     model = load(a.net, head=a.task)
     if a.refit_decoder:
         # the decoder a neurofeedback or BCI protocol uses is fitted afterwards, in a calibration
-        # session, not trained together with the network: a fresh read-out, fitted on the frozen
-        # state by read-out-only supervised training (the instrument's arm A), then frozen
-        torch.manual_seed(1000 + a.net)
-        with torch.no_grad():
-            model.W_out.normal_(0.0, 1.0 / np.sqrt(model.W_out.shape[1]))
-            model.W_out.mul_(model.out_mask)
-            model.b_out.zero_()
-        adapt_decoder(model, env_fn, a.refit_decoder, 1e-3)
-        model.eval()
+        # session, not trained together with the network
+        refit_decoder(model, env_fn, a.net, a.refit_decoder)
     if a.rec_noise_scale != 1.0:
         # internal noise as a degradation: raised in the buffer the network actually draws from,
         # and left on at evaluation, so behaviour is scored on the degraded network
