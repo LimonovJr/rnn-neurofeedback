@@ -1274,6 +1274,52 @@ def access(args):
                   f"({lo_:.2f} to {hi_:.2f})   {sum(x < 0 for x in d['refit'])}/{len(both)} below")
 
 
+def neutral(args):
+    """Block 58: what the neutral target and the scrambled weight change cost in best-threshold d'
+    against the magnified target on the same networks, raw and per unit of weight movement."""
+    swept_ = {(r["state"], int(r["net"])): r for r in runs.read(f"{args.results}/access_c1_net*.csv")}
+    rows = runs.read(f"{args.results}/neutral_c1_net*.csv")
+    nets = sorted({int(r["net"]) for r in rows} & {n for s, n in swept_ if s == "theta0"}
+                  & {n for s, n in swept_ if s == "k2"})
+    if not nets:
+        print("no networks with both the neutral runs and block 57's sweeps")
+        return
+    at = {(r["state"], int(r["net"])): r for r in rows}
+    states = ["k2"] + sorted({r["state"] for r in rows})
+    size = {n: float(at["scrambled change", n]["moved"]) for n in nets}
+    draws = np.random.default_rng(0).integers(0, len(nets), (10000, len(nets)))
+    loss, moved = {}, {}
+    print(f"{len(nets)} networks; loss = best-threshold d' minus the start's")
+    print("state               moved    gain      loss             p   lower   AUC      own d'   "
+          "loss per unit moved")
+    for state in states:
+        row = lambda n: swept_["k2", n] if state == "k2" else at[state, n]
+        d = lambda key: np.array([float(row(n)[key]) - float(swept_["theta0", n][key]) for n in nets])
+        loss[state] = d("frozen_best_d")
+        moved[state] = np.array([size[n] if state == "k2" else float(row(n)["moved"]) for n in nets])
+        gain = f"{np.mean([float(row(n)['gain']) for n in nets]):.2f}" \
+            if state.startswith("neutral") else ""
+        mean, sem, pv = stats.one_sample(loss[state])
+        print(f"{state:<18}{moved[state].mean():>7.4f}{gain:>8}{mean:>+9.3f} +- {sem:.3f}{pv:>9.4f}"
+              f"{sum(v < 0 for v in loss[state]):>5d}/{len(nets)}{d('frozen_auc').mean():>+8.3f}"
+              f"{d('frozen_own_d').mean():>+9.3f}{loss[state].mean() / moved[state].mean():>+12.1f}")
+    per = lambda state, idx: loss[state][idx].mean(-1) / moved[state][idx].mean(-1)
+    everyone = np.arange(len(nets))
+    for state in states[1:]:
+        lo, hi = np.percentile(per(state, draws) / per("k2", draws), [2.5, 97.5])
+        mean, sem, pv = stats.paired(loss[state], loss["k2"])
+        print(f"{state}: loss per unit moved over the magnified target's "
+              f"{per(state, everyone) / per('k2', everyone):.2f} (95 % bootstrap {lo:.2f} to "
+              f"{hi:.2f}); raw difference {mean:+.3f} +- {sem:.3f} p = {pv:.4f}")
+    doses = [s for s in states if s.startswith("neutral")]
+    if len(doses) > 1:
+        gains = {s: np.array([float(at[s, n]["gain"]) for n in nets]) for s in doses}
+        nearest = min(doses, key=lambda s: abs(moved[s].mean() - moved["k2"].mean()))
+        print(f"gain higher at {doses[-1]} than at {doses[0]} on "
+              f"{int((gains[doses[-1]] > gains[doses[0]]).sum())}/{len(nets)} networks; primary "
+              f"dose (movement nearest the magnified target's): {nearest}")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1555,7 +1601,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
           "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
-          "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access}
+          "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
+          "neutral": neutral}
 
 
 def main():
