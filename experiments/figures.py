@@ -51,20 +51,25 @@ def roc_points(roc):
     return out
 
 
-def dots(ax, x, values, colour, jitter=0.08, mean_dx=0.22, label=None):
-    """One dot per network, and the mean with its standard error beside them."""
+def dots(ax, x, values, colour, jitter=0.08, mean_dx=0.22, label=None, hollow=False):
+    """One dot per network, and the mean with its standard error beside them. `hollow` draws open
+    squares, for the discovery networks next to the replication ones."""
     values = np.asarray(values, dtype=float)
-    ax.scatter(x + np.random.uniform(-jitter, jitter, len(values)), values, s=10, color=colour,
-               alpha=0.6, lw=0, zorder=3, label=label)
+    xs = x + np.random.uniform(-jitter, jitter, len(values))
+    if hollow:
+        ax.scatter(xs, values, s=11, marker="s", facecolors="none", edgecolors=colour, lw=0.7,
+                   alpha=0.8, zorder=3, label=label)
+    else:
+        ax.scatter(xs, values, s=10, color=colour, alpha=0.6, lw=0, zorder=3, label=label)
     sem = values.std(ddof=1) / np.sqrt(len(values)) if len(values) > 1 else 0.0
-    ax.errorbar(x + mean_dx, values.mean(), yerr=sem, fmt="o", color="k", ms=3.5, capsize=2,
-                zorder=4)
+    ax.errorbar(x + mean_dx, values.mean(), yerr=sem, fmt="s" if hollow else "o", color="k",
+                mfc="white" if hollow else "k", ms=3.5, capsize=2, zorder=4)
 
 
 def headroom(args):
     """What better dynamics could still buy through the frozen decoder: H = C_B - C_A per network,
     on the cell tasks and on the context task."""
-    fig, ax = plt.subplots(figsize=(3.6, 2.6))
+    fig, ax = plt.subplots(figsize=(4.4, 2.7))
     labels = []
     for i, setting in enumerate(SETTINGS):
         rows = runs.read(f"{args.results}/headroom_{setting}_*_net*.csv")
@@ -72,19 +77,20 @@ def headroom(args):
              for a in ("A", "B")}
         nets = sorted(set(c["A"]) & set(c["B"]))
         dots(ax, i, [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets], "#555555")
-        labels.append(setting)
+        labels.append({"c1": "c1,\nintact", "c1r1": "c1, mild\ninput noise",
+                       "c1r3": "c1, stronger\ninput noise", "patch": "patch cell"}[setting])
     rows = runs.read(f"{args.results}/control_net*.csv")
     c = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["reeval"]))
          for a in ("A", "B")}
     nets = sorted(set(c["A"]) & set(c["B"]))
     dots(ax, len(labels), [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets],
          COLOURS["reward"])
-    labels.append("context")
+    labels.append("context\n(positive control)")
     ax.axhline(0, color="k", lw=0.5)
     ax.axhspan(-RES_BEHAVIOUR, RES_BEHAVIOUR, color="0.9", zorder=0, lw=0)
-    ax.set_xticks(range(len(labels)), labels)
-    ax.set_ylabel("headroom H = C_B − C_A (d′)")
-    ax.set_title("Decoder-limited cells, dynamics-limited context")
+    ax.set_xticks(range(len(labels)), labels, fontsize=6.5)
+    ax.set_ylabel("headroom (d′):\nall weights − read-out only")
+    ax.set_title("Decoder-limited tasks, dynamics-limited context")
     save(fig, args.out, "fig1_headroom")
 
 
@@ -100,14 +106,14 @@ def hull(points):
     return np.array(out)
 
 
-def mean_roc(rows, grid=np.linspace(0, 1, 101)):
+def mean_roc(rows, grid=np.linspace(0, 1, 101), key="roc_end"):
     """Two views of the same sweeps, averaged over networks. The swept curve is the (false alarm,
     hit) point at each offset in offset order, so it passes through the point at the decoder's own
     threshold; at the liberal end releases turn into aborts and it folds back. The hull is the
     frontier the AUC is taken under, averaged vertically over false-alarm rates."""
     curves, trace = defaultdict(list), defaultdict(lambda: defaultdict(list))
     for r in rows:
-        pts = roc_points(r["roc_end"])
+        pts = roc_points(r[key])
         h = hull([(fa, hit) for _, hit, fa, *_ in pts])
         curves[int(r["net"])].append(np.interp(grid, h[:, 0], h[:, 1]))
         for o, hit, fa, *_ in pts:
@@ -149,18 +155,23 @@ def strength_panel(ax, args):
 
 
 def one_roc(args):
-    """Reward and supervision on the same ROC on c1, not on context (networks 10-24); and across
-    target strengths the same discriminability with an own-threshold difference that reverses."""
+    """Reward and supervision on the same ROC on c1, not on context; and across target strengths
+    the same discriminability with an own-threshold difference that reverses."""
     nets = set(range(10, 25))
     fig, axes = plt.subplots(1, 3, figsize=(9.2, 2.8), gridspec_kw={"width_ratios": [1, 1, 1.25]})
     strength_panel(axes[2], args)
-    for ax, task, title in zip(axes, ("c1", "context"), ("c1: one ROC", "context: two ROCs")):
-        rows = [r for r in swept(args, task) if int(r["net"]) in nets and int(r["rep"]) in (0, 1)]
+    # on context the reward learner's curve peaks beyond the standard grid, so that panel is drawn
+    # from the end states swept to +12, which were kept on networks 0-4 only
+    wide = runs.read(f"{args.results}/wide_sweep_context_net*.csv")
+    panels = (("c1: one ROC (networks 10–24)", "roc_end",
+               [r for r in swept(args, "c1") if int(r["net"]) in nets and int(r["rep"]) in (0, 1)]),
+              ("context: two ROCs (networks 0–4)", "roc", wide))
+    for ax, (title, key, rows) in zip(axes, panels):
         if not rows:
-            ax.set_title(f"{task}: no runs")
+            ax.set_title("no runs")
             continue
         for cond in ("control", "reward"):
-            grid, frontier, curve, own = mean_roc([r for r in rows if r["cond"] == cond])
+            grid, frontier, curve, own = mean_roc([r for r in rows if r["cond"] == cond], key=key)
             ax.plot(grid, frontier, "--", color=COLOURS[cond], lw=0.8, alpha=0.75)
             ax.plot(curve[:, 0], curve[:, 1], "-", color=COLOURS[cond], lw=1.3, label=NAMES[cond])
             ax.plot(*own, "o", color=COLOURS[cond], ms=6, mec="k", mew=0.6, zorder=5)
@@ -170,7 +181,7 @@ def one_roc(args):
         ax.set_aspect("equal")
         ax.set_xlabel("false-alarm rate")
         ax.set_ylabel("hit rate")
-        ax.set_title(title)
+        ax.set_title(title, fontsize=8)
     axes[0].legend(loc="lower right", fontsize=7)
     axes[1].text(0.98, 0.25, "solid: swept curve\ndashed: upper hull\ncircle: own threshold",
                  ha="right", va="bottom", fontsize=6.5, transform=axes[1].transAxes)
@@ -186,11 +197,13 @@ def calibration(args):
         print("calibration: no runs yet")
         return
     costs = sorted({float(r["trained_cost"]) for r in rows})
-    fig, axes = plt.subplots(1, 3, figsize=(8.6, 2.5))
+    fig, axes = plt.subplots(1, 3, figsize=(9.2, 2.6))
     shades = dict(zip(costs, ("#fdae6b", "#e6550d", "#a63603")))
+    new = lambda r: int(r["net"]) >= 10
     for cost in costs:
         for readout, style in (("sampled", "-"), ("greedy", "--")):
-            sel = [r for r in rows if float(r["trained_cost"]) == cost and r["readout"] == readout]
+            sel = [r for r in rows if float(r["trained_cost"]) == cost and r["readout"] == readout
+                   and new(r)]
             curves = defaultdict(list)
             for r in sel:
                 pts = roc_points(r["roc"])
@@ -208,28 +221,38 @@ def calibration(args):
     axes[0].set_ylabel("payoff − best payoff")
     axes[0].set_title("Payoff around the own threshold")
     axes[0].legend(fontsize=6.5, loc="upper left")
-    axes[0].text(0.98, 0.04, "solid: sampled, noise on\ndashed: greedy, noise off", ha="right",
-                 fontsize=6, transform=axes[0].transAxes)
+    axes[0].text(0.98, 0.04, "networks 10–24\nsolid: sampled, noise on\ndashed: greedy, noise off",
+                 ha="right", fontsize=6, transform=axes[0].transAxes)
 
+    def lost(r, cost):
+        pts = {o: c - cost * f - m - a for o, _, _, c, f, m, a in roc_points(r["roc"])}
+        return max(pts.values()) - pts[0.0]
+
+    # filled circles: networks 10-24; open squares: networks 0-4
     for i, cost in enumerate(costs):
-        for readout, dx, colour in (("sampled", -0.2, shades[cost]), ("greedy", 0.2, "0.6")):
-            sel = [r for r in rows if float(r["trained_cost"]) == cost and r["readout"] == readout]
-            lost = []
-            for r in sel:
-                pts = {o: c - cost * f - m - a for o, _, _, c, f, m, a in roc_points(r["roc"])}
-                lost.append(max(pts.values()) - pts[0.0])
-            dots(axes[1], i + dx, lost, colour, jitter=0.05, mean_dx=0.0,
-                 label=("sampled, noise on" if cost == costs[-1] else None)
-                 if readout == "sampled" else ("greedy, noise off" if cost == costs[-1] else None))
+        for readout, dx, colour in (("sampled", -0.24, shades[cost]), ("greedy", 0.14, "0.55")):
+            for fresh, shift in ((True, 0.0), (False, 0.13)):
+                sel = [r for r in rows if float(r["trained_cost"]) == cost
+                       and r["readout"] == readout and new(r) == fresh]
+                first = cost == costs[-1] and fresh
+                dots(axes[1], i + dx + shift, [lost(r, cost) for r in sel], colour, jitter=0.03,
+                     mean_dx=0.0, hollow=not fresh,
+                     label=({"sampled": "sampled, noise on", "greedy": "greedy, noise off"}[readout]
+                            if first else None))
     axes[1].set_xticks(range(len(costs)), [f"{c:g}" for c in costs])
     axes[1].set_xlabel("false-alarm cost trained with")
     axes[1].set_ylabel("payoff lost at own threshold")
     axes[1].set_title("Payoff given away")
     axes[1].legend(fontsize=6.5, loc="upper left")
+    axes[1].text(0.98, 0.9, "● networks 10–24\n□ networks 0–4", ha="right", va="top", fontsize=6,
+                 transform=axes[1].transAxes)
 
     for i, cost in enumerate(costs):
-        sel = [r for r in rows if float(r["trained_cost"]) == cost and r["readout"] == "sampled"]
-        dots(axes[2], i, [float(r["fa_at_zero"]) for r in sel], shades[cost], jitter=0.05)
+        for fresh, dx in ((True, -0.12), (False, 0.16)):
+            sel = [r for r in rows if float(r["trained_cost"]) == cost and r["readout"] == "sampled"
+                   and new(r) == fresh]
+            dots(axes[2], i + dx, [float(r["fa_at_zero"]) for r in sel], shades[cost], jitter=0.04,
+                 mean_dx=0.0, hollow=not fresh)
     axes[2].set_xticks(range(len(costs)), [f"{c:g}" for c in costs])
     axes[2].set_xlabel("false-alarm cost trained with")
     axes[2].set_ylabel("false alarms at own threshold")
@@ -250,8 +273,8 @@ def routes(axes, args):
     for r in act:
         r["d_offset"] = end[r["run"]] - start[int(r["net"])]
     arms = ("reward", "control", "k2", "shuffled")
-    measures = (("d_hold_level", "hold level"), ("d_hold_sd", "hold spread (SD)"),
-                ("d_resp_max", "response peak"), ("d_offset", "best threshold"))
+    measures = (("d_hold_level", "margin level, hold"), ("d_hold_sd", "margin spread, hold"),
+                ("d_resp_max", "margin peak, response"), ("d_offset", "best threshold"))
     for ax, (key, label) in zip(axes, measures):
         for i, a in enumerate(arms):
             for net_set, marker, dx in (((0, 5), "o", -0.13), ((10, 25), "s", 0.13)):
@@ -330,7 +353,7 @@ def adaptive(args):
                        [lbl.replace("every ", "").replace(", lagging baseline", "\nlag")
                         for lbl in labels])
     axes[2].set_xlabel("tracker interval (updates)")
-    axes[2].set_ylabel("end AUC")
+    axes[2].set_ylabel("area under the ROC at the end")
     axes[2].set_title("No pace helps")
     fig.tight_layout()
     save(fig, args.out, "figS1_adaptive")
@@ -345,23 +368,25 @@ def context_deficit(args):
         if r["cond"] == "control":
             return "supervision"
         if r.get("baseline") == "type":
-            return "trial-type\nbaseline"
+            return "reward,\ntrial-type\nbaseline"
         if int(r.get("batch") or 48) != 48:
-            return f"batch {r['batch']}" + ("\nequal trials" if int(r["updates"])
-                                             != BUDGET["context"] else "")
-        return "reward"
+            return "reward,\nbatch 192" + ("\n2000 updates\n(equal trials)"
+                                             if int(r["updates"]) != BUDGET["context"]
+                                             else "\n8000 updates\n(4× trials)")
+        return "reward,\nbatch 48\n8000 updates"
 
-    labels = ["reward", "trial-type\nbaseline", "batch 192", "batch 192\nequal trials",
-              "supervision"]
-    fig, ax = plt.subplots(figsize=(4.0, 2.5))
+    labels = ["reward,\nbatch 48\n8000 updates", "reward,\ntrial-type\nbaseline",
+              "reward,\nbatch 192\n8000 updates\n(4× trials)",
+              "reward,\nbatch 192\n2000 updates\n(equal trials)", "supervision"]
+    fig, ax = plt.subplots(figsize=(5.0, 2.9))
     for i, lbl in enumerate(labels):
         v = list(per_net([r for r in rows if label(r) == lbl],
                          lambda r: float(r["auc_end"])).values())
         if v:
             dots(ax, i, v, COLOURS["control"] if lbl == "supervision" else COLOURS["reward"])
-    ax.set_xticks(range(len(labels)), labels, fontsize=6.5)
-    ax.set_ylabel("end AUC")
-    ax.set_title("Context: reward's deficit and its estimate")
+    ax.set_xticks(range(len(labels)), labels, fontsize=6)
+    ax.set_ylabel("area under the ROC at the end")
+    ax.set_title("Context task: more trials help, less variance does not")
     save(fig, args.out, "fig4_context_deficit")
 
 
@@ -369,6 +394,7 @@ def location_and_dose(axes, args):
     """Location carries part of c1's discriminability, and a magnified positional code moves the
     criterion in proportion to its gain without buying any."""
     loc = runs.read(f"{args.results}/location_c1_*.csv")
+    loc += runs.read(f"{args.results}/location_mirror_c1_net*.csv")
     dose_rows = [r for r in runs.read(f"{args.results}/induction_dose_c1_net*.csv")
                  if not int(r["shuffle"])]
     ax = axes[0]
@@ -377,11 +403,11 @@ def location_and_dose(axes, args):
     for state, name in (("theta0", "start"), ("control", "trained")):
         base = per_net([r for r in loc if r["state"] == state and r["variant"] == "task"],
                        lambda r: float(r["best_d"]))
-        for variant, colour in (("at_cue", COLOURS["reward"]), ("opposite", COLOURS["control"])):
+        for variant, colour in (("at_cue", COLOURS["reward"]), ("mirror", COLOURS["control"])):
             v = per_net([r for r in loc if r["state"] == state and r["variant"] == variant],
                         lambda r: float(r["best_d"]))
             dots(ax, x, [v[n] - base[n] for n in sorted(base) if n in v], colour, jitter=0.07,
-                 label={"at_cue": "at the cue", "opposite": "opposite the cue"}[variant]
+                 label={"at_cue": "at the cue", "mirror": "mirrored"}[variant]
                  if state == "theta0" else None)
             ticks.append((x, name))
             x += 1
@@ -397,7 +423,7 @@ def location_and_dose(axes, args):
     nets = sorted({int(r["net"]) for r in dose_rows})
     for ax, key, label, title in (
             (axes[1], "d_offset", "best-threshold shift", "Criterion follows the gain"),
-            (axes[2], "d_hold_sd", "Δ hold spread (SD)", "…through the margin's spread"),
+            (axes[2], "d_hold_sd", "Δ margin spread (SD), hold", "…through the margin's spread"),
             (axes[3], "d_best", "Δ best-threshold d′", "Discriminability falls")):
         for n in nets:
             sel = sorted((r for r in dose_rows if int(r["net"]) == n), key=lambda r: float(r["kappa"]))
@@ -467,18 +493,21 @@ def wrong_sign(args):
     ax.set_title("…and to discriminability")
 
     ax = axes[3]
-    start = [r for r in runs.read(f"{args.results}/location_c1_*.csv")
-             if r["state"] == "theta0" and int(r["net"]) >= 10]
-    base = per_net([r for r in start if r["variant"] == "task"], lambda r: float(r["best_d"]))
-    moved = per_net([r for r in start if r["variant"] == "at_cue"], lambda r: float(r["best_d"]))
-    dots(ax, 0, [moved[n] - base[n] for n in sorted(base) if n in moved], "0.35", jitter=0.06)
-    for i, state in enumerate(("closed", "yoked"), 1):
-        dots(ax, i, [float(r["best_at_cue"]) - float(r["best_task"]) for r in rows
-                     if r["state"] == state], "0.35", jitter=0.06)
+    mirror = runs.read(f"{args.results}/location_mirror_c1_net*.csv")
+    at_cue = {"theta0": per_net([r for r in runs.read(f"{args.results}/location_c1_*.csv")
+                                 if r["state"] == "theta0" and r["variant"] == "at_cue"],
+                                lambda r: float(r["best_d"]))}
+    for state in ("closed", "yoked"):
+        at_cue[state] = {int(r["net"]): float(r["best_at_cue"]) for r in rows if r["state"] == state}
+    for i, (state, _) in enumerate(states):
+        control = per_net([r for r in mirror if r["state"] == state and int(r["net"]) >= 10],
+                          lambda r: float(r["best_d"]))
+        dots(ax, i, [at_cue[state][n] - control[n] for n in sorted(control) if n in at_cue[state]],
+             "0.35", jitter=0.06)
     ax.axhline(0, color="k", lw=0.5)
     ax.set_xticks(range(3), [name for _, name in states])
-    ax.set_ylabel("best d′, distractors at the cue − task")
-    ax.set_title("Behaviour still uses location")
+    ax.set_ylabel("best d′, distractors\nat the cue − mirrored")
+    ax.set_title("…and to its use of location")
     fig.tight_layout()
     save(fig, args.out, "fig6_wrong_sign")
 

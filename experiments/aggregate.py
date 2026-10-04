@@ -1165,6 +1165,78 @@ def location(args):
               f"(95 % CI {mean - 2.09 * sem:.3f} to {mean + 2.09 * sem:.3f})")
 
 
+def location_specific(args):
+    """Block 55: the part of discriminability that is specific to location. Distractors at the cue
+    against distractors mirrored through the centre: both move them, one removes what their place
+    tells. The edge control (`opposite`) is printed beside it."""
+    rows = runs.read(f"{args.results}/location_c1_*.csv")
+    rows += runs.read(f"{args.results}/location_mirror_c1_net*.csv")
+    moved = runs.read(f"{args.results}/relocated_c1_net*.csv")
+    best = defaultdict(dict)
+    for r in rows:
+        best[r["state"], r["variant"]][int(r["net"])] = float(r["best_d"])
+    for r in (r for r in moved if r["best_task"]):
+        best[r["state"], "task"].setdefault(int(r["net"]), float(r["best_task"]))
+        best[r["state"], "at_cue"].setdefault(int(r["net"]), float(r["best_at_cue"]))
+    specific = {}
+    print("state      n   task   at cue   mirror   opposite   mirror - task        p   "
+          "at cue - mirror        p   lower")
+    for state in ("theta0", "control", "closed", "yoked"):
+        at = {v: best[state, v] for v in ("task", "at_cue", "mirror", "opposite")}
+        nets = sorted(set(at["task"]) & set(at["at_cue"]) & set(at["mirror"]))
+        if not nets:
+            continue
+        cost = stats.one_sample([at["mirror"][n] - at["task"][n] for n in nets])
+        specific[state] = {n: at["at_cue"][n] - at["mirror"][n] for n in nets}
+        mean, sem, pv = stats.one_sample(list(specific[state].values()))
+        edge = np.mean([at["opposite"][n] for n in nets if n in at["opposite"]] or [np.nan])
+        print(f"{state:<9}{len(nets):>3d}{np.mean([at['task'][n] for n in nets]):>7.3f}"
+              f"{np.mean([at['at_cue'][n] for n in nets]):>9.3f}"
+              f"{np.mean([at['mirror'][n] for n in nets]):>9.3f}{edge:>11.3f}"
+              f"{cost[0]:>+10.3f} +- {cost[1]:.3f}{cost[2]:>9.4f}{mean:>+10.3f} +- {sem:.3f}{pv:>9.4f}"
+              f"{sum(v < 0 for v in specific[state].values()):>5d}/{len(nets)}")
+    for a, b in (("control", "theta0"), ("closed", "yoked"), ("closed", "theta0"), ("yoked", "theta0")):
+        if a in specific and b in specific:
+            nets = sorted(set(specific[a]) & set(specific[b]))
+            mean, sem, pv = stats.paired([specific[a][n] for n in nets],
+                                         [specific[b][n] for n in nets])
+            print(f"at cue - mirror, {a} - {b}: {mean:+.3f} +- {sem:.3f}  p = {pv:.4f}  "
+                  f"({len(nets)} networks)")
+    for state in ("theta0", "control"):
+        nets = sorted(specific.get(state, {}))
+        if nets:
+            share = [-specific[state][n] / best[state, "mirror"][n] for n in nets]
+            mean, sem, _ = stats.one_sample(share)
+            print(f"{state}: share of the mirrored task's best d' lost at the cue {mean:.3f} "
+                  f"(95 % CI {mean - 2.09 * sem:.3f} to {mean + 2.09 * sem:.3f})")
+
+
+def wide_sweep(args):
+    """Block 56: the context end states swept to +12, against the same sweep cut off at +4."""
+    rows = runs.read(f"{args.results}/wide_sweep_context_net*.csv")
+    print(f"{len(rows)} states")
+    print("measure                    reward   control   reward - control        p   networks lower")
+    net_mean = lambda cond, key: {n: np.mean(v) for n, v in by_net(
+        [r for r in rows if r["cond"] == cond], lambda r: float(r[key])).items()}
+    for key, label in (("auc_to_4", "AUC, grid to +4"), ("auc_wide", "AUC, grid to +12"),
+                       ("coarse_d_to_4", "best d', grid to +4"),
+                       ("coarse_d_wide", "best d', grid to +12")):
+        a, b = net_mean("reward", key), net_mean("control", key)
+        nets = sorted(set(a) & set(b))
+        mean, sem, pv = stats.paired([a[n] for n in nets], [b[n] for n in nets])
+        print(f"{label:<25}{np.mean([a[n] for n in nets]):>8.3f}{np.mean([b[n] for n in nets]):>10.3f}"
+              f"{mean:>+11.3f} +- {sem:.3f}{pv:>9.4f}"
+              f"{sum(a[n] < b[n] for n in nets):>8d}/{len(nets)}")
+    for cond in ("reward", "control"):
+        sel = [r for r in rows if r["cond"] == cond]
+        gain = [float(r["auc_wide"]) - float(r["auc_to_4"]) for r in sel]
+        peak = [float(r["peak_offset"]) for r in sel]
+        print(f"{cond}: area gained by the wider grid {np.mean(gain):+.4f} (largest {max(gain):+.4f}, "
+              f"{sum(g > 0.001 for g in gain)}/{len(gain)} states); hit rate peaks at offset "
+              f"{np.mean(peak):+.1f} ({min(peak):+.1f} to {max(peak):+.1f}), beyond +4 on "
+              f"{sum(x > 4 for x in peak)}/{len(peak)}")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1445,7 +1517,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "adaptive-split": adaptive_split, "context-optimum": context_optimum,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
-          "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled}
+          "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
+          "location-specific": location_specific, "wide-sweep": wide_sweep}
 
 
 def main():
