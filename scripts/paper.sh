@@ -983,7 +983,9 @@ block56() {
 #     state with the recurrent weights frozen.
 block57() {
     for net in $READ_NETS; do
-        run "b57_access_net$net" -m experiments.access --nets $net \n            --states theta0,control,k2,shuffled --select-n 1000 --report-n 4000 \n            --out results/access_c1_net$net.csv
+        run "b57_access_net$net" -m experiments.access --nets $net \
+            --states theta0,control,k2,shuffled --select-n 1000 --report-n 4000 \
+            --out results/access_c1_net$net.csv
     done
     wait
 }
