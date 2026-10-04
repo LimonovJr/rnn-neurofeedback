@@ -71,7 +71,8 @@ def main():
     rows = []
     for net in (int(n) for n in a.nets.split(",")):
         for state in a.states.split(","):
-            # every state of a network is read on the same draws of trials
+            # nothing but the state differs between a network's rows; the trials of each sweep
+            # are drawn afresh
             torch.manual_seed(71 + net)
             np.random.seed(71 + net)
             model = restore(net, state)

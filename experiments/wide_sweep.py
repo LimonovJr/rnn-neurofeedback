@@ -38,9 +38,10 @@ def states(net):
     for cond in ("reward", "control"):
         for path in sorted(glob.glob(str(CKPT / "nf_context" / f"{cond}_net{net}_r*_u8000.pt"))):
             yield cond, os.path.basename(path)[:-3], path
-        path = CKPT / "nf_context_b37" / f"nf_context_{cond}_lam1_n10000_crit_net{net}_r9_u8000.pt"
-        if path.exists():
-            yield cond, path.name[:-3], str(path)
+        for kept in (f"nf_context_b37/nf_context_{cond}_lam1_n10000_crit_net{net}_r9_u8000.pt",
+                     f"nf_context_b60/nf_context_{cond}_lam1_n2000_net{net}_r12_u8000.pt"):
+            if (CKPT / kept).exists():
+                yield cond, os.path.basename(kept)[:-3], str(CKPT / kept)
 
 
 def main():

@@ -54,6 +54,9 @@ def states(net):
     for cond in ("reward", "control"):
         for path in sorted(glob.glob(str(CKPT / "nf_context" / f"{cond}_net{net}_r*_u8000.pt"))):
             yield f"{cond} end ({os.path.basename(path).split('_')[2]})", path
+        path = CKPT / "nf_context_b60" / f"nf_context_{cond}_lam1_n2000_net{net}_r12_u8000.pt"
+        if path.exists():
+            yield f"{cond} end (r12)", str(path)
 
 
 def main():

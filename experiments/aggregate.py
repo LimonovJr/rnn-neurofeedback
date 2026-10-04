@@ -1237,6 +1237,43 @@ def wide_sweep(args):
               f"{sum(x > 4 for x in peak)}/{len(peak)}")
 
 
+def access(args):
+    """Block 57: best-threshold d' through the frozen decision read-out and through one refitted on
+    the frozen state, per end state, as a deficit against the start read the same way; and the
+    share of the deficit that refitting the read-out removes."""
+    rows = runs.read(f"{args.results}/access_c1_net*.csv")
+    at = defaultdict(dict)
+    for r in rows:
+        at[r["state"]][int(r["net"])] = r
+    rng = np.random.default_rng(0)
+    for label, lo, hi in (("all", 0, 25), ("networks 0-4", 0, 5), ("networks 10-24", 10, 25)):
+        nets = sorted(n for n in at["theta0"] if lo <= n < hi)
+        if not nets:
+            continue
+        print(f"\n{label} ({len(nets)} networks)")
+        print("state      frozen    refit   longer   refit - frozen   longer - refit   cosine")
+        for state in at:
+            v = {k: np.array([float(at[state][n][f"{k}_best_d"]) for n in nets if n in at[state]])
+                 for k in ("frozen", "refit", "longer")}
+            cos = np.mean([float(at[state][n]["cosine"]) for n in nets if n in at[state]])
+            gain, longer = stats.one_sample(v["refit"] - v["frozen"]), stats.one_sample(v["longer"] - v["refit"])
+            print(f"{state:<9}{v['frozen'].mean():>8.3f}{v['refit'].mean():>9.3f}{v['longer'].mean():>9.3f}"
+                  f"{gain[0]:>+10.3f} +- {gain[1]:.3f}{longer[0]:>+10.3f} +- {longer[1]:.3f}{cos:>+9.2f}")
+        print("deficit against theta0      frozen read-out        refitted               p   "
+              "rescued share (95 % bootstrap)")
+        for state in (s for s in at if s != "theta0"):
+            both = [n for n in nets if n in at[state]]
+            d = {k: np.array([float(at[state][n][f"{k}_best_d"]) - float(at["theta0"][n][f"{k}_best_d"])
+                              for n in both]) for k in ("frozen", "refit", "longer")}
+            before, after = stats.one_sample(d["frozen"]), stats.one_sample(d["refit"])
+            draws = rng.integers(0, len(both), (10000, len(both)))
+            share = 1 - d["refit"][draws].mean(1) / d["frozen"][draws].mean(1)
+            lo_, hi_ = np.percentile(share, [2.5, 97.5])
+            print(f"{state:<22}{before[0]:>+10.3f} +- {before[1]:.3f}{after[0]:>+10.3f} +- {after[1]:.3f}"
+                  f"{after[2]:>9.4f}{1 - d['refit'].mean() / d['frozen'].mean():>9.2f} "
+                  f"({lo_:.2f} to {hi_:.2f})   {sum(x < 0 for x in d['refit'])}/{len(both)} below")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1518,7 +1555,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "location": location, "induction": induction, "dose": dose, "rt": rt,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
           "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
-          "location-specific": location_specific, "wide-sweep": wide_sweep}
+          "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access}
 
 
 def main():

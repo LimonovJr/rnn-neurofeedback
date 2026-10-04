@@ -990,6 +990,51 @@ block57() {
     wait
 }
 
+# 58. What a representational loss costs when it is not about position: the magnified target's
+#     demand made of the position head with its units permuted, at two gains, and the magnified
+#     target's own weight change with its entries permuted.
+block58() {
+    for net in $BATCH2; do for kappa in 2 3; do
+        run "b58_neutral_k${kappa}_net$net" -m experiments.nf --task c1 --cond neutral \
+            --kappa $kappa --net $net --rep 6 --lr 1e-4 --eval-n 2000 --save-at 1200 \
+            --ckpt-dir nf_c1_steps
+    done; done
+    wait
+    for net in $BATCH2; do
+        run "b58_read_net$net" -m experiments.neutral --nets $net \
+            --out results/neutral_c1_net$net.csv
+    done
+    wait
+}
+
+# 59. Headroom on the context task under the protocol of the other settings: four restarts per
+#     arm, equal budgets, the six-checkpoint ceiling. The value in use came from the earlier
+#     protocol on three networks.
+block59() {
+    for net in $NETS; do for arm in A B; do for init in incumbent fresh_a fresh_b fresh_c; do
+        run "b59_headroom_context_${arm}_net${net}_$init" -m experiments.headroom \
+            --setting context --arm $arm --init $init --net $net
+    done; done; done
+    wait
+}
+
+# 60. The context comparison on networks 10-24 with the end states kept, so that they can be
+#     swept to the peak of the reward learner's curve and read the way the learner trains.
+block60() {
+    for net in $BATCH2; do for cond in control reward; do
+        run "b60_context_${cond}_net$net" -m experiments.nf --task context --cond $cond \
+            --net $net --rep 12 --eval-n 2000 --save-at 8000 --ckpt-dir nf_context_b60
+    done; done
+    wait
+    for net in $BATCH2; do
+        run "b60_wide_net$net" -m experiments.wide_sweep --nets $net \
+            --out results/wide_sweep_context_b60_net$net.csv
+        run "b60_optimum_net$net" -m experiments.context_optimum --nets $net \
+            --out results/context_optimum_b60_net$net.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

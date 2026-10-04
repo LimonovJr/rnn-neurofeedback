@@ -21,6 +21,7 @@ SETTINGS = {
     "c1r1": dict(env=tasks.sameloc(*tasks.C1), sigma_in=0.18, cap=4000),
     "c1r3": dict(env=tasks.sameloc(*tasks.C1), sigma_in=0.34, cap=4000),
     "patch": dict(env=tasks.patch(), sigma_in=0.0, cap=6000),
+    "context": dict(env=tasks.context(), sigma_in=0.0, cap=6000, score=behaviour.go_nogo),
 }
 
 
@@ -28,6 +29,7 @@ def run(setting, arm, init, net, cap, chunk, hidden, reeval, out):
     cfg = SETTINGS[setting]
     sigma_in = cfg["sigma_in"]
     env_fn = cfg["env"]
+    score = cfg.get("score", behaviour.detection)
     lr = ceiling.LR[arm]
 
     m0 = load(net)
@@ -39,7 +41,7 @@ def run(setting, arm, init, net, cap, chunk, hidden, reeval, out):
     m0.eval()
 
     state = m0.state_dict()
-    d0 = behaviour.measure(m0, env_fn, n=reeval)
+    d0 = behaviour.measure(m0, env_fn, n=reeval, score=score)
     convex = ceiling.convex_readout(m0, env_fn)
     assert convex[2] < 1e-4, f"folded read-out does not reproduce the fit: {convex[2]:.2e}"
     print(f"[{setting} {arm} net{net} {init}] theta0 d'={d0:+.3f} lr={lr} cap={cap} "
@@ -56,8 +58,8 @@ def run(setting, arm, init, net, cap, chunk, hidden, reeval, out):
         print(f"  chunk {i:3d} upd {(i + 1) * chunk:6d} d'(1k)={d:+.2f}", flush=True)
 
     C, traj, reevals, drift = ceiling.ceiling(net, state, env_fn, convex, init, arm, lr, cap,
-                                              head=head, sigma_in=sigma_in, chunk=chunk,
-                                              reeval=reeval, on_chunk=chunk_done)
+                                              head=head, sigma_in=sigma_in, score=score,
+                                              chunk=chunk, reeval=reeval, on_chunk=chunk_done)
     sd, se = ceiling.spread(reevals)
     if arm != "B":
         assert drift < 1e-6, f"arm {arm} moved the dynamics: {drift:.2e}"

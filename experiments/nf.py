@@ -27,8 +27,8 @@ from src.model import CKPT, load, save
 from src.training import TrainConfig, train_supervised
 
 K = 6                              # checkpoints averaged into the reported level
-CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "gated", "control_fa",
-         "operant", "axis"]
+CONDS = ["control", "position", "joint", "reward", "reward_aux", "expand", "neutral", "gated",
+         "control_fa", "operant", "axis"]
 # what the network could already do before the run, scored through the same decision read-out
 RETENTION = {"pretrain": tasks.stage(2), "patch": tasks.patch()}
 DEFAULTS = {
@@ -175,7 +175,9 @@ def run(a):
                       axis_increment=a.axis_increment, entropy=a.entropy, tracker=tracker,
                       baseline=a.baseline, batch=a.batch, temperature=a.temperature,
                       focus=(np.radians(a.focus_theta), np.radians(a.focus_width))
-                      if a.focus_theta is not None else None)
+                      if a.focus_theta is not None else None,
+                      neutral=signals.neutral_readout(model, env_fn, a.net)
+                      if a.cond == "neutral" else None)
         clipped = round(float(np.mean(history.get("clipped") or [0.0])), 3)
         if tracker:
             late = history.get("imbalance", [])[-len(history.get("imbalance", [])) // 4:]
@@ -397,7 +399,7 @@ def main():
     # collide with an old result and be skipped as already done
     tag = (("" if a.target == "target" else "_cue") + ("_local" if a.rule == "local" else "")
            + (f"_anchor{a.anchor:g}" if a.anchor else "")
-           + (f"_k{a.kappa:g}" if a.cond == "expand" else "") + ("_shuf" if a.shuffle else "")
+           + (f"_k{a.kappa:g}" if a.cond in ("expand", "neutral") else "") + ("_shuf" if a.shuffle else "")
            + (f"_npk{a.explore_k}" if a.explore_k else "") + ("_ret" if a.retention else "")
            + ("_crit" if a.criterion else "")
            + (f"_rn{a.rec_noise_scale:g}" if a.rec_noise_scale != 1.0 else "")

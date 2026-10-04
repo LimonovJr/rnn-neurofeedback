@@ -12,6 +12,8 @@ builds has to reach behaviour through a decoder that did not change.
                 learns slowly
     expand      no task signal at all: make the frozen position head read the same positions
                 kappa times further apart -- a within-manifold target
+    neutral     the same demand made of a read-out that reads nothing in particular: what
+                training against a representational loss costs when the loss is not about position
     gated       joint, with the positional term switched on only on the updates where its
                 gradient points the same way as the task's (Du et al. 2018)
     control_fa  the control with the false-alarm penalty the ceiling arms train with, so the
@@ -28,6 +30,7 @@ builds has to reach behaviour through a decoder that did not change.
 moved from rich toward lazy without touching the learning rate.
 """
 
+import copy
 import math
 from collections import defaultdict
 
@@ -39,7 +42,8 @@ from src import local, trials
 from src.training import cross_entropy
 
 LR = {"control": 3e-4, "position": 3e-4, "joint": 3e-4, "reward": 1e-4, "reward_aux": 1e-4,
-      "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4, "axis": 3e-4}
+      "expand": 3e-4, "gated": 3e-4, "control_fa": 3e-4, "operant": 1e-4, "axis": 3e-4,
+      "neutral": 3e-4}
 FA_PENALTY = 0.4                                 # the weight the ceiling arms train with
 OPTIMISERS = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}
 BATCH = 48
@@ -53,7 +57,7 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
           optimizer="adam", fa_cost=1.0, fa_penalty=None, operant_reward="position", axis=None,
           axis_increment=None, entropy=ENTROPY, tracker=None, baseline="batch", batch=BATCH,
           baseline_decay=0.99,
-          temperature=1.0, focus=None):
+          temperature=1.0, focus=None, neutral=None):
     """`train_decoder` only applies to the position signal, whose task term back-propagates through
     the decision read-out unless it is frozen. `kappa` is the gain the expand signal asks the
     frozen position head for."""
@@ -67,6 +71,8 @@ def train(model, cond, env_fn, updates, lr=None, lam=1.0, train_decoder=False, e
     freeze_decision = cond != "position" or not train_decoder
     if cond == "expand":
         step = expand_step(kappa, shuffle, focus)
+    elif cond == "neutral":
+        step = neutral_step(kappa, neutral)
     elif cond == "gated":
         step = gated_step(lam)
     elif cond == "control_fa":
@@ -143,6 +149,49 @@ def expand_step(kappa, shuffle=False, focus=None):
             sq = ((model.decode_xy(h) - kappa * xy_true) ** 2).sum(-1)
             per_trial = (sq * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
             err = (per_trial * inside).sum() / inside.sum().clamp_min(1)
+        return err, {"expand_err": err.detach()}
+    return step
+
+
+def neutral_readout(model, env_fn, net, n=512):
+    """The position head with its units permuted: a read-out with the head's own weights that reads
+    nothing in particular. It is centred on the mean delay state and rescaled so that, on the
+    starting network, its delay-mean output varies across trials as much as the head's own does.
+    Returned with a frozen copy of the starting network, which gives each trial its target."""
+    reference = copy.deepcopy(model).eval()
+    for p in reference.parameters():
+        p.requires_grad_(False)
+    perm = torch.randperm(model.hidden_size, generator=torch.Generator().manual_seed(2000 + net))
+    head = model.W_aux.detach()
+    w = head[:, perm].clone()
+    x, _, _, _, _, delay_mask, _ = trials.batch(env_fn, n, int(model.dt), window_ms=WINDOW_MS)
+    with torch.no_grad():
+        h = reference(x, return_hidden=True)[2]
+    share = delay_mask / delay_mask.sum(1, keepdim=True).clamp_min(1)
+    state = (h * share[..., None]).sum(1)
+    centre = state.mean(0)
+    spread = lambda rows: float(((state - centre) @ rows.T).var(0).sum())
+    w = w * math.sqrt(spread(head) / spread(w))
+    return w, -(w @ centre), reference
+
+
+def neutral_step(kappa, readout):
+    """The magnified target without its content. The delay state is pushed until the permuted
+    read-out gives kappa times what it gave on the starting network for the same trial, averaged
+    over the delay. Like the positional target this is one value per trial held through the delay,
+    read by two linear units, with no task term."""
+    w, b, reference = readout
+
+    def step(model, batch):
+        x, _, _, _, _, delay_mask, _ = batch
+        _, _, h = model(x, return_hidden=True)
+        share = delay_mask / delay_mask.sum(1, keepdim=True).clamp_min(1)
+        with torch.no_grad():
+            was = F.linear(reference(x, return_hidden=True)[2], w, b)
+            target = kappa * (was * share[..., None]).sum(1, keepdim=True)
+        sq = ((F.linear(h, w, b) - target) ** 2).sum(-1)
+        per_trial = (sq * delay_mask).sum(1) / delay_mask.sum(1).clamp_min(1)
+        err = per_trial.sum() / per_trial.shape[0]
         return err, {"expand_err": err.detach()}
     return step
 
