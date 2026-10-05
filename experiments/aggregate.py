@@ -102,6 +102,35 @@ def headroom_context(args):
     print(f"arm B still rising by {np.mean(rise):+.3f} on the network mean (limit 0.15)")
 
 
+def headroom_nonlinear(args):
+    """Block 61: the nonlinear read-out of the frozen dynamics on the context task, between the
+    linear read-out's ceiling and the all-weights one."""
+    rows = runs.read(f"{args.results}/headroom_context_*_net*.csv")
+    arm = {a: by_net([r for r in rows if r["arm"] == a], lambda r: r) for a in ("A", "Aplus", "B")}
+    level = lambda a, n: st.median(float(r["C_mean"]) for r in arm[a][n])
+    nets = sorted(set(arm["A"]) & set(arm["Aplus"]) & set(arm["B"]))
+    if not nets:
+        print("no network with all three arms")
+        return
+    print("net    C_A   C_MLP    C_B   share of the gap closed   head: last three checkpoints - "
+          "three before")
+    c = {a: np.array([level(a, n) for n in nets]) for a in arm}
+    for i, n in enumerate(nets):
+        curves = [runs.split(r["curve"]) for r in arm["Aplus"][n]]
+        rise = np.mean([np.mean(k[-3:]) - np.mean(k[-6:-3]) for k in curves])
+        print(f"{n:>3}{c['A'][i]:>7.3f}{c['Aplus'][i]:>8.3f}{c['B'][i]:>7.3f}"
+              f"{(c['Aplus'][i] - c['A'][i]) / (c['B'][i] - c['A'][i]):>12.2f}{rise:>+22.3f}")
+    above, below = stats.paired(c["Aplus"], c["A"]), stats.paired(c["Aplus"], c["B"])
+    gap = (c["B"] - c["A"]).mean()
+    draws = np.random.default_rng(0).integers(0, len(nets), (10000, len(nets)))
+    share = (c["Aplus"] - c["A"])[draws].mean(1) / (c["B"] - c["A"])[draws].mean(1)
+    print(f"C_MLP {c['Aplus'].mean():.3f}: {above[0]:+.3f} +- {above[1]:.3f} over C_A (p = "
+          f"{above[2]:.4f}), {below[0]:+.3f} +- {below[1]:.3f} against C_B (p = {below[2]:.4f})")
+    print(f"gap {gap:.3f}, a third of it {gap / 3:.3f}; share closed "
+          f"{(c['Aplus'] - c['A']).mean() / gap:.2f} (95 % bootstrap "
+          f"{np.percentile(share, 2.5):.2f} to {np.percentile(share, 97.5):.2f})")
+
+
 def control(args):
     rows = runs.read(f"{args.results}/control_net*.csv")
     arms = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["reeval"]))
@@ -1307,6 +1336,45 @@ def access(args):
                   f"({lo_:.2f} to {hi_:.2f})   {sum(x < 0 for x in d['refit'])}/{len(both)} below")
 
 
+def access_mlp(args):
+    """Block 62: block 57's question asked of a nonlinear head. Best-threshold d' through a head
+    with one hidden layer fitted on the frozen state, and the deficit against the start read the
+    same way, beside the deficit the linear refit left on the same networks."""
+    linear = {(r["state"], int(r["net"])): r for r in runs.read(f"{args.results}/access_c1_net*.csv")}
+    head = {(r["state"], int(r["net"])): r for r in runs.read(f"{args.results}/access_mlp_c1_net*.csv")}
+    states = sorted({s for s, _ in head} - {"theta0"})
+    nets = sorted(n for s, n in head if s == "theta0"
+                  and all((state, n) in head and (state, n) in linear for state in states))
+    if not nets:
+        print("no networks with every state read through both read-outs")
+        return
+    v = lambda rows, state, key: np.array([float(rows[state, n][key]) for n in nets])
+    print(f"{len(nets)} networks\nstate      frozen   linear refit   nonlinear   twice the updates   "
+          "nonlinear - linear   longer - nonlinear")
+    for state in ["theta0"] + states:
+        gain = stats.one_sample(v(head, state, "refit_best_d") - v(linear, state, "refit_best_d"))
+        longer = stats.one_sample(v(head, state, "longer_best_d") - v(head, state, "refit_best_d"))
+        print(f"{state:<9}{v(head, state, 'frozen_best_d').mean():>8.3f}"
+              f"{v(linear, state, 'refit_best_d').mean():>12.3f}"
+              f"{v(head, state, 'refit_best_d').mean():>13.3f}"
+              f"{v(head, state, 'longer_best_d').mean():>15.3f}"
+              f"{gain[0]:>+14.3f} +- {gain[1]:.3f}{longer[0]:>+12.3f} +- {longer[1]:.3f}")
+    draws = np.random.default_rng(0).integers(0, len(nets), (10000, len(nets)))
+    print("deficit against theta0     linear refit       nonlinear              p   below   "
+          "nonlinear / linear (95 % bootstrap)   with twice the updates")
+    for state in states:
+        d = {name: v(rows, state, key) - v(rows, "theta0", key)
+             for name, rows, key in (("linear", linear, "refit_best_d"),
+                                     ("head", head, "refit_best_d"),
+                                     ("longer", head, "longer_best_d"))}
+        before, after = stats.one_sample(d["linear"]), stats.one_sample(d["head"])
+        lo, hi = np.percentile(d["head"][draws].mean(1) / d["linear"][draws].mean(1), [2.5, 97.5])
+        print(f"{state:<22}{before[0]:>+8.3f} +- {before[1]:.3f}{after[0]:>+10.3f} +- {after[1]:.3f}"
+              f"{after[2]:>9.4f}{sum(x < 0 for x in d['head']):>5d}/{len(nets)}"
+              f"{d['head'].mean() / d['linear'].mean():>12.2f} ({lo:.2f} to {hi:.2f})"
+              f"{d['longer'].mean() / d['linear'].mean():>22.2f}")
+
+
 def neutral(args):
     """Block 58: what the neutral target and the scrambled weight change cost in best-threshold d'
     against the magnified target on the same networks, raw and per unit of weight movement."""
@@ -1659,7 +1727,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
           "neutral": neutral, "neutral-routes": neutral_routes,
-          "headroom-context": headroom_context,
+          "headroom-context": headroom_context, "headroom-nonlinear": headroom_nonlinear,
+          "access-mlp": access_mlp,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 
