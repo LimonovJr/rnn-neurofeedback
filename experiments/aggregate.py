@@ -1353,6 +1353,29 @@ def neutral(args):
               f"dose (movement nearest the magnified target's): {nearest}")
 
 
+def neutral_routes(args):
+    """Post hoc: what the neutral target does at the decoder's own threshold and to the release
+    margin, beside the magnified positional target: change against the start per network."""
+    rows = runs.read(f"{args.results}/neutral_routes_c1_net*.csv")
+    at = {(r["state"], int(r["net"])): r for r in rows}
+    nets = sorted(n for state, n in at if state == "theta0")
+    measures = (("fa", "false alarms"), ("hit", "hits"), ("abort", "aborts"),
+                ("sd", "margin spread, hold"), ("level", "margin level, hold"),
+                ("hold_max", "margin peak, hold"), ("resp_max", "margin peak, response"))
+    start = lambda key: np.mean([float(at["theta0", n][key]) for n in nets])
+    print(f"{len(nets)} networks; change against the start (start value in brackets)")
+    print("state              " + "".join(f"{label:>24}" for _, label in measures))
+    print("start              " + "".join(f"{f'[{start(key):.3f}]':>24}" for key, _ in measures))
+    for state in sorted({s for s, _ in at} - {"theta0"}):
+        cells = []
+        for key, _ in measures:
+            d = [float(at[state, n][key]) - float(at["theta0", n][key]) for n in nets
+                 if (state, n) in at]
+            mean, sem, _ = stats.one_sample(d)
+            cells.append(f"{mean:+.3f} +- {sem:.3f} {sum(v > 0 for v in d):>2d}/{len(d)}")
+        print(f"{state:<19}" + "".join(f"{c:>24}" for c in cells))
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1635,7 +1658,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
           "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
-          "neutral": neutral, "headroom-context": headroom_context,
+          "neutral": neutral, "neutral-routes": neutral_routes,
+          "headroom-context": headroom_context,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 
