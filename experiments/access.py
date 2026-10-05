@@ -13,6 +13,9 @@ The same is done on the starting state and on the reward and supervised end stat
 refitting adds by itself is known. The fit is then continued for as many updates again and swept
 once more, which says whether the first fit had converged.
 
+`--head mlp` fits a nonlinear head in place of the linear read-out (the instrument's arm A+): what
+a linear read-out cannot recover may still be there for another kind of read-out.
+
     python -m experiments.access --nets 10,11
 """
 
@@ -25,12 +28,14 @@ import torch
 from experiments.nf import adapt_decoder, refit_decoder
 from experiments.stepwise import ENV, sweep
 from src import behaviour, runs
-from src.model import CKPT, load
+from src.model import CKPT, load, mlp_readout
+from src.training import TrainConfig, train_supervised
 
 STATES = {"control": "nf_c1_control_lam1_n10000_lr0.0001_net{net}_r6_u1200.pt",
           "reward": "nf_c1_reward_lam1_n10000_net{net}_r6_u1200.pt",
           "k2": "nf_c1_expand_lam1_n10000_k2_lr0.0001_net{net}_r6_u1200.pt",
           "shuffled": "nf_c1_expand_lam1_n10000_k1_shuf_lr0.0001_net{net}_r6_u1200.pt"}
+HEAD_UNITS = 32
 
 
 def restore(net, state):
@@ -47,6 +52,18 @@ def decision_axis(model):
     return w[1] - w[0]
 
 
+def train_head(model, updates):
+    """Supervised training of the nonlinear head alone, with the settings of the linear refit."""
+    for p in model.parameters():
+        p.requires_grad_(False)
+    for p in model.readout_head.parameters():
+        p.requires_grad_(True)
+    train_supervised(model, ENV, TrainConfig(batch_size=64, lr=1e-3, max_updates=updates,
+                                             print_every=updates + 1, fa_penalty_weight=0.4,
+                                             stop_on_no_miss=0))
+    model.eval()
+
+
 def read(model, n_select, n_report, tag):
     s = sweep(model, n_select, n_report)
     own = next(pt for pt in s["roc"].split("|") if float(pt.split(":")[0]) == 0.0)
@@ -59,12 +76,14 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--nets", required=True)
     p.add_argument("--states", default="theta0,control,reward,k2,shuffled")
+    p.add_argument("--head", choices=["linear", "mlp"], default="linear")
     p.add_argument("--updates", type=int, default=2000)
     p.add_argument("--select-n", type=int, default=2000)
     p.add_argument("--report-n", type=int, default=10000)
     p.add_argument("--out")
     a = p.parse_args()
-    a.out = a.out or f"results/access_c1_{a.nets.replace(',', '_')}.csv"
+    tag = "" if a.head == "linear" else f"{a.head}_"
+    a.out = a.out or f"results/access_{tag}c1_{a.nets.replace(',', '_')}.csv"
     if os.path.exists(a.out):
         print(f"[skip] {a.out} exists", flush=True)
         return
@@ -76,20 +95,28 @@ def main():
             torch.manual_seed(71 + net)
             np.random.seed(71 + net)
             model = restore(net, state)
-            row = dict(net=net, state=state, updates=a.updates)
+            row = dict(net=net, state=state, updates=a.updates, head=a.head)
             row.update(read(model, a.select_n, a.report_n, "frozen"))
-            old = decision_axis(model)
-            refit_decoder(model, ENV, net, a.updates)
-            new = decision_axis(model)
-            row["cosine"] = round(float(torch.cosine_similarity(old, new, dim=0)), 4)
+            if a.head == "mlp":
+                model.readout_head = mlp_readout(HEAD_UNITS, 1000 + net)()
+                train_head(model, a.updates)
+                row["cosine"] = ""
+            else:
+                old = decision_axis(model)
+                refit_decoder(model, ENV, net, a.updates)
+                row["cosine"] = round(float(torch.cosine_similarity(old, decision_axis(model),
+                                                                    dim=0)), 4)
             row.update(read(model, a.select_n, a.report_n, "refit"))
-            adapt_decoder(model, ENV, a.updates, 1e-3)
-            model.eval()
+            if a.head == "mlp":
+                train_head(model, a.updates)
+            else:
+                adapt_decoder(model, ENV, a.updates, 1e-3)
+                model.eval()
             row.update(read(model, a.select_n, a.report_n, "longer"))
             rows.append(row)
             print(f"  [net {net} {state:<8}] best d' frozen {row['frozen_best_d']:.3f}  refit "
-                  f"{row['refit_best_d']:.3f}  twice the updates {row['longer_best_d']:.3f}  "
-                  f"cos {row['cosine']:+.2f}", flush=True)
+                  f"{row['refit_best_d']:.3f}  twice the updates {row['longer_best_d']:.3f}",
+                  flush=True)
     runs.write(a.out, rows)
 
 

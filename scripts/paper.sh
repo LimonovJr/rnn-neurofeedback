@@ -1035,6 +1035,28 @@ block60() {
     wait
 }
 
+# 61. Arm A+ on the context task: whether its headroom is a limit of the dynamics or of a linear
+#     read-out. One hidden layer on the frozen state, the protocol of block 59.
+block61() {
+    for net in $NETS; do for init in incumbent fresh_a fresh_b fresh_c; do
+        run "b61_headroom_context_Aplus_net${net}_$init" -m experiments.headroom \
+            --setting context --arm Aplus --init $init --net $net
+    done; done
+    wait
+}
+
+# 62. Block 57 with a nonlinear head in place of the linear read-out, on the start and on the end
+#     states of the magnified and the shuffled target: what a linear read-out does not return may
+#     still be there for another kind of read-out. One process per state.
+block62() {
+    for net in $BATCH2; do for state in theta0 k2 shuffled; do
+        run "b62_access_mlp_net${net}_$state" -m experiments.access --head mlp --nets $net \
+            --states $state --select-n 1000 --report-n 4000 \
+            --out results/access_mlp_c1_net${net}_$state.csv
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

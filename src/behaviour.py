@@ -63,13 +63,15 @@ def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False, coa
     `coarse` replaces the default grid of offsets. A learner that ends far on the conservative side
     needs offsets beyond +4 before its curve reaches its peak; on a grid that stops short, the hull
     joins the last point to (1, 1) by a line the network cannot reach and the area is too small."""
-    bias = model.b_out.detach().clone()
+    # with a nonlinear head attached the release logit comes from the head's last layer
+    release = model.b_out if model.readout_head is None else model.readout_head[-1].bias
+    bias = release.detach().clone()
     offsets = COARSE if coarse is None else np.asarray(coarse, dtype=float)
 
     def at(offset, n):
         with torch.no_grad():
-            model.b_out.copy_(bias)
-            model.b_out[1] += offset
+            release.copy_(bias)
+            release[1] += offset
         return measure_outcomes(model, env_fn, n=n, score=score, sampled=sampled)
 
     coarse = [at(offset, n_select) for offset in offsets]
@@ -79,7 +81,7 @@ def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False, coa
     best = float(grid[int(np.argmax(fine))])
     d = at(best, n_report)["d"]
     with torch.no_grad():
-        model.b_out.copy_(bias)
+        release.copy_(bias)
     # releasing too early is an abort, not a hit, so hits fall again at the liberal end and the
     # points are not a curve; the area is taken under their upper convex hull, the best any
     # threshold mixture reaches
