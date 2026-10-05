@@ -73,6 +73,35 @@ def headroom(args):
     print(f"frozen-arm drift: max ||dW_rec||inf = {max(drift):.1e}")
 
 
+def headroom_context(args):
+    """Block 59: headroom on the context task under the protocol of the other settings, against
+    the same network's headroom on intact c1, and whether the all-weights arm had levelled off."""
+    def arms(setting):
+        rows = runs.read(f"{args.results}/headroom_{setting}_*_net*.csv")
+        return {a: by_net([r for r in rows if r["arm"] == a], lambda r: r) for a in ("A", "B")}
+
+    ctx, c1 = arms("context"), arms("c1")
+    level = lambda arm, n: st.median(float(r["C_mean"]) for r in arm[n])
+    nets = sorted(set(ctx["A"]) & set(ctx["B"]) & set(c1["A"]) & set(c1["B"]))
+    print("net    C_A    C_B   headroom   on c1   arm B: last three checkpoints - three before")
+    h, h1, rise = [], [], []
+    for n in nets:
+        curves = [runs.split(r["curve"]) for r in ctx["B"][n]]
+        rise.append(np.mean([np.mean(c[-3:]) - np.mean(c[-6:-3]) for c in curves]))
+        h.append(level(ctx["B"], n) - level(ctx["A"], n))
+        h1.append(level(c1["B"], n) - level(c1["A"], n))
+        print(f"{n:>3}{level(ctx['A'], n):>7.3f}{level(ctx['B'], n):>7.3f}{h[-1]:>+10.3f}"
+              f"{h1[-1]:>+9.3f}{rise[-1]:>+10.3f}")
+    mean, sem, p = stats.one_sample(h)
+    diff, dsem, dp = stats.paired(h, h1)
+    print(f"headroom {mean:+.3f} +- {sem:.3f}  p = {p:.4f}  ({len(nets)} networks, "
+          f"{min(h):+.2f} to {max(h):+.2f})")
+    print(f"minus c1's {diff:+.3f} +- {dsem:.3f}  p = {dp:.4f}; larger on "
+          f"{sum(a > b for a, b in zip(h, h1))}/{len(nets)}; read-out alone below 1.0 on "
+          f"{sum(level(ctx['A'], n) < 1.0 for n in nets)}/{len(nets)}")
+    print(f"arm B still rising by {np.mean(rise):+.3f} on the network mean (limit 0.15)")
+
+
 def control(args):
     rows = runs.read(f"{args.results}/control_net*.csv")
     arms = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["reeval"]))
@@ -1122,10 +1151,11 @@ def adaptive_split(args):
                               "margin_signal", "margin_noise")))
 
 
-def context_optimum(args):
+def context_optimum(args, batch=""):
     """Where the reward learner's payoff is best on the context task against where the tracker's
-    c = 0 sits, on saved states read with the noise on and sampled releases."""
-    rows = runs.read(f"{args.results}/context_optimum_net*.csv")
+    c = 0 sits, on saved states read with the noise on and sampled releases. `batch` names the
+    set of runs: the post hoc states on networks 0-4, or block 60's on networks 10-24."""
+    rows = runs.read(f"{args.results}/context_optimum_{batch}net*.csv")
     kind = lambda r: r["state"].split(" (")[0]
     print("state          n   c=0 exists   optimum conservative   c=0 - optimum   payoff lost "
           "at own   at c=0   aborts at c=0")
@@ -1135,10 +1165,12 @@ def context_optimum(args):
             continue
         found = [r for r in sel if r["offset_c0"] not in ("", "nan")]
         gap = [float(r["offset_c0"]) - float(r["offset_payoff"]) for r in found]
-        lost = lambda key: np.mean([float(r["payoff_best"]) - float(r[key]) for r in sel])
+        # what is given up at c = 0 is averaged over the states that have one
+        lost = lambda key, over: np.mean([float(r["payoff_best"]) - float(r[key]) for r in over]
+                                         or [float("nan")])
         print(f"{k:<14}{len(sel):>3}{len(found):>8}/{len(sel)}{sum(g > 0 for g in gap):>17}/"
               f"{len(found)}{np.mean(gap) if gap else float('nan'):>+16.2f}"
-              f"{lost('payoff_at_own'):>18.3f}{lost('payoff_at_c0'):>9.3f}"
+              f"{lost('payoff_at_own', sel):>18.3f}{lost('payoff_at_c0', found):>9.3f}"
               f"{np.mean([float(r['abort_c0']) for r in found]) if found else float('nan'):>14.3f}")
 
 
@@ -1211,9 +1243,10 @@ def location_specific(args):
                   f"(95 % CI {mean - 2.09 * sem:.3f} to {mean + 2.09 * sem:.3f})")
 
 
-def wide_sweep(args):
-    """Block 56: the context end states swept to +12, against the same sweep cut off at +4."""
-    rows = runs.read(f"{args.results}/wide_sweep_context_net*.csv")
+def wide_sweep(args, batch=""):
+    """Blocks 56 and 60: the context end states swept to +12, against the same sweep cut off at
+    +4."""
+    rows = runs.read(f"{args.results}/wide_sweep_context_{batch}net*.csv")
     print(f"{len(rows)} states")
     print("measure                    reward   control   reward - control        p   networks lower")
     net_mean = lambda cond, key: {n: np.mean(v) for n, v in by_net(
@@ -1602,7 +1635,9 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "repertoire": repertoire, "psychometric": psychometric, "focus": focus,
           "closed-loop": closed_loop, "relocated": relocated, "magnified-vs-shuffled": magnified_vs_shuffled,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
-          "neutral": neutral}
+          "neutral": neutral, "headroom-context": headroom_context,
+          "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
+          "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 
 
 def main():
