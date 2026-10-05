@@ -70,22 +70,17 @@ def headroom(args):
     """What better dynamics could still buy through the frozen decoder: H = C_B - C_A per network,
     on the cell tasks and on the context task."""
     fig, ax = plt.subplots(figsize=(4.4, 2.7))
-    labels = []
-    for i, setting in enumerate(SETTINGS):
+    labels = {"c1": "c1,\nintact", "c1r1": "c1, mild\ninput noise",
+              "c1r3": "c1, stronger\ninput noise", "patch": "patch cell",
+              "context": "context\n(positive control)"}
+    for i, setting in enumerate(labels):
         rows = runs.read(f"{args.results}/headroom_{setting}_*_net*.csv")
         c = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["C_mean"]))
              for a in ("A", "B")}
         nets = sorted(set(c["A"]) & set(c["B"]))
-        dots(ax, i, [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets], "#555555")
-        labels.append({"c1": "c1,\nintact", "c1r1": "c1, mild\ninput noise",
-                       "c1r3": "c1, stronger\ninput noise", "patch": "patch cell"}[setting])
-    rows = runs.read(f"{args.results}/control_net*.csv")
-    c = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["reeval"]))
-         for a in ("A", "B")}
-    nets = sorted(set(c["A"]) & set(c["B"]))
-    dots(ax, len(labels), [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets],
-         COLOURS["reward"])
-    labels.append("context\n(positive control)")
+        dots(ax, i, [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets],
+             COLOURS["reward"] if setting == "context" else "#555555")
+    labels = list(labels.values())
     ax.axhline(0, color="k", lw=0.5)
     ax.axhspan(-RES_BEHAVIOUR, RES_BEHAVIOUR, color="0.9", zorder=0, lw=0)
     ax.set_xticks(range(len(labels)), labels, fontsize=6.5)
@@ -161,11 +156,11 @@ def one_roc(args):
     fig, axes = plt.subplots(1, 3, figsize=(9.2, 2.8), gridspec_kw={"width_ratios": [1, 1, 1.25]})
     strength_panel(axes[2], args)
     # on context the reward learner's curve peaks beyond the standard grid, so that panel is drawn
-    # from the end states swept to +12, which were kept on networks 0-4 only
-    wide = runs.read(f"{args.results}/wide_sweep_context_net*.csv")
+    # from the end states swept to +12
+    wide = runs.read(f"{args.results}/wide_sweep_context_b60_net*.csv")
     panels = (("c1: one ROC (networks 10–24)", "roc_end",
                [r for r in swept(args, "c1") if int(r["net"]) in nets and int(r["rep"]) in (0, 1)]),
-              ("context: two ROCs (networks 0–4)", "roc", wide))
+              ("context: two ROCs (networks 10–24)", "roc", wide))
     for ax, (title, key, rows) in zip(axes, panels):
         if not rows:
             ax.set_title("no runs")
@@ -449,6 +444,64 @@ def representational(args):
     save(fig, args.out, "fig5_representational")
 
 
+def loss_anatomy(args):
+    """What the loss after a representational target is made of: how much of it a target that is
+    not about position costs too, and how much a read-out fitted to the end state returns."""
+    swept_ = {(r["state"], int(r["net"])): r for r in runs.read(f"{args.results}/access_c1_net*.csv")}
+    other = {(r["state"], int(r["net"])): r for r in runs.read(f"{args.results}/neutral_c1_net*.csv")}
+    if not swept_ or not other:
+        print("loss-anatomy: runs missing")
+        return
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 2.8), gridspec_kw={"width_ratios": [1.1, 1.4, 0.8]})
+    ax = axes[0]
+    nets = sorted({n for _, n in other})
+    targets = (("k2", "positional\nκ 2", COLOURS["k2"]), ("neutral k2", "neutral\nκ 2", "0.4"),
+               ("neutral k3", "neutral\nκ 3", "0.4"), ("scrambled change", "scrambled\nchange", "0.65"))
+    for i, (state, _, colour) in enumerate(targets):
+        end = lambda n: swept_["k2", n] if state == "k2" else other[state, n]
+        dots(ax, i, [float(end(n)["frozen_best_d"]) - float(swept_["theta0", n]["frozen_best_d"])
+                     for n in nets], colour)
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(range(len(targets)), [label for _, label, _ in targets], fontsize=6.5)
+    ax.set_ylabel("Δ best-threshold d′")
+    ax.set_title("Most of the loss is the target's")
+
+    ax = axes[1]
+    states = (("theta0", "start"), ("control", "supervised"), ("k2", "κ 2"), ("shuffled", "shuffled"))
+    nets = sorted(n for state, n in swept_ if state == "theta0")
+    for i, (state, _) in enumerate(states):
+        for key, dx, colour, label in (("frozen_best_d", -0.19, "0.4", "frozen read-out"),
+                                       ("refit_best_d", 0.19, "#e6ab02", "read-out refitted")):
+            dots(ax, i + dx, [float(swept_[state, n][key]) for n in nets if (state, n) in swept_],
+                 colour, jitter=0.05, mean_dx=0.0, label=label if i == 0 else None)
+    ax.set_xticks(range(len(states)), [label for _, label in states])
+    ax.set_ylabel("best-threshold d′")
+    ax.set_title("A refitted read-out returns part of it")
+    ax.legend(fontsize=6, loc="lower left", handletextpad=0.2)
+
+    # the fall at the decoder's own threshold, by what gives it back
+    ax = axes[2]
+    fall = lambda state, key: np.mean([float(swept_[state, n][key]) - float(swept_["theta0", n][key])
+                                       for n in nets])
+    parts = (("returned by the threshold", "0.8"), ("by a refitted read-out", "#e6ab02"),
+             ("remaining", "0.25"))
+    for i, state in enumerate(("k2", "shuffled")):
+        own, best, refit = (fall(state, k) for k in ("frozen_own_d", "frozen_best_d", "refit_best_d"))
+        bottom = 0.0
+        for (label, colour), size in zip(parts, (own - best, best - refit, refit)):
+            ax.bar(i, size, bottom=bottom, width=0.6, color=colour, label=label if i == 0 else None)
+            bottom += size
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(range(2), ["κ 2", "shuffled"])
+    ax.set_ylabel("Δ d′ at the own threshold")
+    ax.set_title("Three parts of the fall")
+    # room above zero for the legend, which would otherwise sit on the bars
+    ax.set_ylim(top=0.75)
+    ax.legend(fontsize=5.5, loc="upper center", handlelength=1.0)
+    fig.tight_layout()
+    save(fig, args.out, "fig6_loss_anatomy")
+
+
 def wrong_sign(args):
     """After task training the code is more separable and discriminability is higher, while the
     decoder fitted at the start reads it worse: block 52's two arms read as in block 54."""
@@ -509,12 +562,12 @@ def wrong_sign(args):
     ax.set_ylabel("best d′, distractors\nat the cue − mirrored")
     ax.set_title("…and to its use of location")
     fig.tight_layout()
-    save(fig, args.out, "fig6_wrong_sign")
+    save(fig, args.out, "fig7_wrong_sign")
 
 
 FIGURES = {"headroom": headroom, "one-roc": one_roc, "calibration": calibration,
            "context-deficit": context_deficit, "representational": representational,
-           "wrong-sign": wrong_sign, "adaptive": adaptive}
+           "loss-anatomy": loss_anatomy, "wrong-sign": wrong_sign, "adaptive": adaptive}
 
 
 def main():
