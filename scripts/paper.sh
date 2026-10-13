@@ -1090,6 +1090,18 @@ block63() {
     wait
 }
 
+# 64. No training: on the saved end states of the representational targets, whether the margin
+#     moved as the decoder's output times its coupling to the margin under the network's own
+#     fluctuations says, and whether the delay state moved along the decoder's pattern or its
+#     weights. Networks 0-4 are the pilot, 10-24 the test.
+block64() {
+    for net in $READ_NETS; do
+        run "b64_response_net$net" -m experiments.response --nets $net \
+            --out results/response_c1_net$net.csv
+    done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

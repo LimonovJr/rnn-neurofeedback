@@ -58,10 +58,15 @@ def roc_once(model, env_fn, n, score=detection, offsets=None):
     changes which step is read as the release and nothing else, so with the recurrent noise off the
     states need not be computed again for each offset: every offset is read off the same logits, on
     the same trials. Returns the rates and d' at each offset."""
-    offsets = COARSE if offsets is None else offsets
     kept = [(env, gt, logits) for env, _, gt, logits, _ in trials.rolled(model, env_fn, n)]
+    return roc_points(kept, score, offsets)
+
+
+def roc_points(kept, score=detection, offsets=None):
+    """The rates and d' at each offset for trials already rolled out, each given as (env, targets,
+    logits). The logits need not be a network's own: a predicted margin is read the same way."""
     points = []
-    for offset in offsets:
+    for offset in COARSE if offsets is None else offsets:
         shift = np.array([0.0, offset], dtype=np.float32)
         tr = [trials.record(env, None, gt, logits + shift, None) for env, gt, logits in kept]
         if score is go_nogo:
@@ -69,7 +74,8 @@ def roc_once(model, env_fn, n, score=detection, offsets=None):
         else:
             hit, fa = detection_rates(tr)
             d = dprime(hit, fa)
-        points.append(dict(offset=float(offset), d=d, hit=hit, fa=fa))
+        aborts = sum(t["train_outcome"] == "abort" for t in tr) / max(len(tr), 1)
+        points.append(dict(offset=float(offset), d=d, hit=hit, fa=fa, abort=aborts))
     return points
 
 

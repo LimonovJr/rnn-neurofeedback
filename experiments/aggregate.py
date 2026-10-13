@@ -1550,6 +1550,50 @@ def dose_test(args):
                   f"{sem:.4f}  p = {pv:.4f}  ({len(nets)} networks)")
 
 
+def response(args):
+    """Block 64: the margin predicted from the decoder output's change and its coupling to the
+    margin under the starting network's own fluctuations, against what the end states did. Per
+    target the mean changes; across runs how well predicted follows actual; and where the change
+    of positional tuning lies."""
+    from scipy.stats import spearmanr
+    rows = runs.read(f"{args.results}/response_c1_net*.csv")
+    change = lambda r, m, which: float(r[f"{m}_{which}"]) - float(r[f"{m}_start"])
+    for label, lo, hi in (("networks 10-24, the test", 10, 25), ("networks 0-4, the pilot", 0, 5)):
+        sel = [r for r in rows if lo <= int(r["net"]) < hi]
+        if not sel:
+            continue
+        print(f"\n{label}: {len(sel)} runs")
+        print("target        n   coupling  step r  size   best offset     spread        best d'    "
+              "false alarms   premature    (actual | predicted)")
+        for state in sorted({r["state"] for r in sel}):
+            g = [r for r in sel if r["state"] == state]
+            mean = lambda f: np.mean([f(r) for r in g])
+            pair = lambda m: (f"{mean(lambda r: change(r, m, 'end')):>+7.2f} |"
+                              f"{mean(lambda r: change(r, m, 'pred')):>+6.2f}")
+            print(f"{state:<12}{len(g):>3}{mean(lambda r: float(r['explained'])):>9.3f}"
+                  f"{mean(lambda r: float(r['step_r'])):>8.2f}"
+                  f"{mean(lambda r: float(r['step_ratio'])):>7.2f}  {pair('offset')}  {pair('sd')}"
+                  f"  {pair('best_d')}  {pair('fa')}  {pair('abort')}")
+        print("across runs    R2 of the prediction as it stands   r squared   slope of actual on "
+              "predicted   Spearman")
+        for m, name in (("offset", "best offset"), ("sd", "spread"), ("best_d", "best d'"),
+                        ("own_d", "own d'"), ("auc", "AUC"), ("fa", "false alarms"),
+                        ("abort", "premature")):
+            x = np.array([change(r, m, "pred") for r in sel])
+            y = np.array([change(r, m, "end") for r in sel])
+            slope, intercept = np.polyfit(x, y, 1) if x.std() > 0 else (float("nan"), 0.0)
+            r2 = 1 - ((y - x) ** 2).sum() / ((y - y.mean()) ** 2).sum()
+            print(f"{name:<14}{r2:>+20.2f}{np.corrcoef(x, y)[0, 1] ** 2:>22.2f}{slope:>18.2f}"
+                  f"{spearmanr(x, y)[0]:>24.2f}")
+        k2 = [r for r in sel if r["state"] == "k2" and r["in_pattern"]]
+        if k2:
+            more = sum(float(r["in_pattern"]) > float(r["in_filter"]) for r in k2)
+            print(f"change of positional tuning after k2: in the pattern's span "
+                  f"{np.mean([float(r['in_pattern']) for r in k2]):.3f}, in the filter's "
+                  f"{np.mean([float(r['in_filter']) for r in k2]):.3f}; pattern larger on "
+                  f"{more}/{len(k2)} networks")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1834,7 +1878,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
           "neutral": neutral, "neutral-routes": neutral_routes,
           "headroom-context": headroom_context, "headroom-nonlinear": headroom_nonlinear,
-          "access-mlp": access_mlp, "dose-test": dose_test,
+          "access-mlp": access_mlp, "dose-test": dose_test, "response": response,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 
