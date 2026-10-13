@@ -1444,6 +1444,59 @@ def neutral_routes(args):
         print(f"{state:<19}" + "".join(f"{c:>24}" for c in cells))
 
 
+RES_AUC = {"c1": 0.0106, "context": 0.0117}
+
+
+def dose_test(args):
+    """Block 63: each signal read along its dose. Per arm, the change against the start at every
+    dose; the dose chosen on the selection sample and the change of the area under the ROC at that
+    dose on the report sample; and the best feedback arm of the context task against that of c1,
+    network by network."""
+    rows = runs.read(f"{args.results}/dose_*_net*.csv")
+    at = defaultdict(dict)
+    for r in rows:
+        at[r["task"], r["arm"], int(r["net"])][float(r["lr"]), int(r["dose"])] = r
+    chosen = {}
+    for task in sorted({k[0] for k in at}):
+        arms = sorted({k[1] for k in at if k[0] == task})
+        for arm in arms:
+            nets = sorted(k[2] for k in at if k[:2] == (task, arm))
+            points = sorted({d for n in nets for d in at[task, arm, n] if d[1] > 0})
+            points = [d for d in points if all(d in at[task, arm, n] for n in nets)]
+            change = lambda key, d: np.array([float(at[task, arm, n][d][key])
+                                              - float(at[task, arm, n][d[0], 0][key]) for n in nets])
+            print(f"\n{task}, {arm} ({len(nets)} networks)")
+            print("     lr  dose    moved      loss             AUC, select      AUC, report"
+                  "              p    up    best d'    own d'")
+            for d in points:
+                moved = np.mean([float(at[task, arm, n][d]["moved"]) for n in nets])
+                mean, sem, pv = stats.one_sample(change("auc", d))
+                print(f"{d[0]:>7g}{d[1]:>6d}{moved:>9.4f}{change('loss', d).mean():>+10.4f}"
+                      f"{change('auc_select', d).mean():>+16.4f}{mean:>+13.4f} +- {sem:.4f}{pv:>9.4f}"
+                      f"{int((change('auc', d) > 0).sum()):>4d}/{len(nets)}"
+                      f"{change('best_d', d).mean():>+10.3f}{change('own_d', d).mean():>+10.3f}")
+            if not points:
+                continue
+            best = max(points, key=lambda d: change("auc_select", d).mean())
+            gain = change("auc", best)
+            mean, sem, pv = stats.one_sample(gain)
+            verdict = "a gain" if pv < 0.05 and mean > RES_AUC[task] else "no gain"
+            print(f"  dose chosen on the selection sample: lr {best[0]:g}, {best[1]} updates; on the "
+                  f"report sample {mean:+.4f} +- {sem:.4f}, p = {pv:.4f}, resolution "
+                  f"{RES_AUC[task]}: {verdict}")
+            chosen[task, arm] = dict(zip(nets, gain))
+    feedback = lambda task: {a: g for (t, a), g in chosen.items()
+                             if t == task and a not in ("control", "template")}
+    if feedback("c1") and feedback("context"):
+        top = {t: max(feedback(t).items(), key=lambda kv: np.mean(list(kv[1].values())))
+               for t in ("c1", "context")}
+        nets = sorted(set(top["c1"][1]) & set(top["context"][1]))
+        mean, sem, pv = stats.paired([top["context"][1][n] for n in nets],
+                                     [top["c1"][1][n] for n in nets])
+        print(f"\nbest feedback arm on context ({top['context'][0]}) minus best on c1 "
+              f"({top['c1'][0]}): {mean:+.4f} +- {sem:.4f}  p = {pv:.4f}  ({len(nets)} networks)")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1728,7 +1781,7 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
           "neutral": neutral, "neutral-routes": neutral_routes,
           "headroom-context": headroom_context, "headroom-nonlinear": headroom_nonlinear,
-          "access-mlp": access_mlp,
+          "access-mlp": access_mlp, "dose-test": dose_test,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 

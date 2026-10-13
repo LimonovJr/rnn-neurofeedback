@@ -53,6 +53,37 @@ def measure_outcomes(model, env_fn, n=1000, score=detection, device="cpu", sampl
     return dict(d=d, hit=hit, fa=fa, **{k: counts.get(k, 0) / max(len(tr), 1) for k in OUTCOMES})
 
 
+def roc_once(model, env_fn, n, score=detection, offsets=None):
+    """The points of a threshold sweep from one pass over the trials. An offset on the release logit
+    changes which step is read as the release and nothing else, so with the recurrent noise off the
+    states need not be computed again for each offset: every offset is read off the same logits, on
+    the same trials. Returns the rates and d' at each offset."""
+    offsets = COARSE if offsets is None else offsets
+    kept = [(env, gt, logits) for env, _, gt, logits, _ in trials.rolled(model, env_fn, n)]
+    points = []
+    for offset in offsets:
+        shift = np.array([0.0, offset], dtype=np.float32)
+        tr = [trials.record(env, None, gt, logits + shift, None) for env, gt, logits in kept]
+        if score is go_nogo:
+            d, hit, fa, _, _ = go_nogo(tr)
+        else:
+            hit, fa = detection_rates(tr)
+            d = dprime(hit, fa)
+        points.append(dict(offset=float(offset), d=d, hit=hit, fa=fa))
+    return points
+
+
+def hull_area(points):
+    """Area under the upper convex hull of (false alarm, hit) points with the two corners."""
+    hull = []
+    for point in sorted([(0.0, 0.0), (1.0, 1.0)] + list(points)):
+        while len(hull) >= 2 and ((hull[-1][0] - hull[-2][0]) * (point[1] - hull[-2][1])
+                                  - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-2][0])) >= 0:
+            hull.pop()
+        hull.append(point)
+    return sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(hull, hull[1:]))
+
+
 def threshold_sweep(model, env_fn, score, n_select, n_report, sampled=False, coarse=None):
     """The best the frozen decoder can do by moving its release threshold alone: the offset on the
     release logit that maximises d' on one draw, coarse then fine, re-scored on an independent draw

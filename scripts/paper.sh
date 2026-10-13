@@ -1057,6 +1057,23 @@ block62() {
     wait
 }
 
+# 63. The dose of a feedback signal: every signal read after 0 to 300 updates from the start, at
+#     two learning rates, on seeded trials shared by the states of a network. Supervision is the
+#     reference on each task; the template arm is exploratory.
+block63() {
+    for lr in 1e-4 1e-5; do for net in $BATCH2; do
+        for arm in axis k2 neutral control; do
+            run "b63_dose_c1_${arm}_lr${lr}_net$net" -m experiments.dose --task c1 --arm $arm \
+                --net $net --lr $lr
+        done
+        for arm in k1 k2 neutral template control; do
+            run "b63_dose_context_${arm}_lr${lr}_net$net" -m experiments.dose --task context \
+                --arm $arm --net $net --lr $lr
+        done
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

@@ -196,6 +196,29 @@ def neutral_step(kappa, readout):
     return step
 
 
+def decision_window(h, delay_mask, steps=6):
+    """Mean state over the first steps from target onset, where the decision is made; the onset is
+    the step after the delay window."""
+    onset = delay_mask.shape[1] - torch.flip(delay_mask > 0, [1]).float().argmax(1)
+    index = (onset[:, None] + torch.arange(steps, device=h.device)[None, :]).clamp(max=h.shape[1] - 1)
+    return h.gather(1, index[..., None].expand(-1, -1, h.shape[-1])).mean(1)
+
+
+def template_step(w, b):
+    """A target taken from a network that can do the task: a frozen linear decoder of go against
+    no-go, fitted on the decision-time state of a trained network, is trained through on the
+    network that cannot. The decoded-neurofeedback analogue is a target pattern taken from a
+    localiser or from a healthy group. No task term, and nothing passes through the decision
+    read-out."""
+    def step(model, batch):
+        x, y, _, _, _, delay_mask, _ = batch
+        _, _, h = model(x, return_hidden=True)
+        logit = decision_window(h, delay_mask) @ w + b
+        loss = F.binary_cross_entropy_with_logits(logit, (y == 1).any(1).float())
+        return loss, {"template_loss": loss.detach()}
+    return step
+
+
 def control_fa_step(weight):
     def step(model, batch):
         x, y, mask, fa, _, _, _ = batch

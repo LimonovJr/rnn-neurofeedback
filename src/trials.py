@@ -1,5 +1,7 @@
 """Rolling trials out of a task and turning them into records or training batches."""
 
+import itertools
+
 import numpy as np
 import torch
 
@@ -25,7 +27,15 @@ def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None, sampled=
             out.append(record(env, x, gt, logits[0].cpu().numpy(), h[0].cpu().numpy(), sampled))
         return out
 
-    out, done = [], 0
+    return [record(env, x, gt, logits, h, sampled)
+            for env, x, gt, logits, h in rolled(model, env_fn, n_trials, dev, batch_size)]
+
+
+def rolled(model, env_fn, n_trials, device="cpu", batch_size=256):
+    """Trials rolled out in padded batches, each as (env, inputs, targets, logits, states), before
+    anything is read off the logits."""
+    model.eval()
+    done = 0
     while done < n_trials:
         b = min(int(batch_size), n_trials - done)
         envs, xs, lens = [], [], []
@@ -39,13 +49,25 @@ def collect(model, env_fn, n_trials=200, device="cpu", batch_size=None, sampled=
         for i, x in enumerate(xs):
             xb[i, :len(x)] = x
         with torch.no_grad():
-            logits, _, h = model(torch.tensor(xb, device=dev), return_hidden=True)
+            logits, _, h = model(torch.tensor(xb, device=device), return_hidden=True)
         lg, hh = logits.cpu().numpy(), h.cpu().numpy()
         for i, env in enumerate(envs):
             T = lens[i]
-            out.append(record(env, xs[i], env.gt.astype(np.int64), lg[i, :T], hh[i, :T], sampled))
+            yield env, xs[i], env.gt.astype(np.int64), lg[i, :T], hh[i, :T]
         done += b
-    return out
+
+
+def seeded(env_fn, seed):
+    """A factory whose i-th environment draws the same trial every time a factory is made from the
+    same seed. Two collections started from fresh factories then roll out identical trials, so two
+    states of a network can be compared on the trials themselves and not on two draws of them."""
+    count = itertools.count()
+
+    def factory():
+        env = env_fn()
+        env.seed((seed * 100003 + next(count)) % 2 ** 32)
+        return env
+    return factory
 
 
 def record(env, x_seq, gt_seq, logits, h, sampled=False):
