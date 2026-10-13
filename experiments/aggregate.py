@@ -1594,6 +1594,72 @@ def response(args):
                   f"{more}/{len(k2)} networks")
 
 
+def cue_strength(args):
+    """Block 65: each saved network against the start at every cue strength, and whether the cost
+    of a magnified positional code shrinks, or turns into a gain, as the cue weakens."""
+    rows = runs.read(f"{args.results}/cue_strength_c1_net*.csv")
+    if not rows:
+        print("no runs")
+        return
+    at = {(r["state"], float(r["cue"]), int(r["net"])): r for r in rows}
+    nets = sorted({k[2] for k in at})
+    cues = sorted({k[1] for k in at})
+    value = lambda state, cue, key: np.array([float(at[state, cue, n][key]) for n in nets])
+    print(f"{len(nets)} networks; the start at each cue strength")
+    print("   cue   best d'     AUC    own d'    hits   false alarms   premature")
+    for cue in cues:
+        print(f"{cue:>6g}" + "".join(f"{value('theta0', cue, k).mean():>9.3f}"
+                                     for k in ("best_d", "auc", "own_d", "hit", "fa", "abort")))
+    trained = min(cues, key=lambda c: abs(c - 0.46))
+    for state in sorted({k[0] for k in at} - {"theta0"}):
+        if any((state, c, n) not in at for c in cues for n in nets):
+            continue
+        print(f"\n{state} minus the start")
+        print("   cue        AUC               p    up    best d'            p    own d'")
+        pvalues = []
+        for cue in cues:
+            area = stats.one_sample(value(state, cue, "auc") - value("theta0", cue, "auc"))
+            best = stats.one_sample(value(state, cue, "best_d") - value("theta0", cue, "best_d"))
+            own = (value(state, cue, "own_d") - value("theta0", cue, "own_d")).mean()
+            up = int((value(state, cue, "auc") > value("theta0", cue, "auc")).sum())
+            pvalues.append((cue, area[0], area[2]))
+            print(f"{cue:>6g}{area[0]:>+10.4f} +- {area[1]:.4f}{area[2]:>8.4f}{up:>4d}/{len(nets)}"
+                  f"{best[0]:>+9.3f} +- {best[1]:.3f}{best[2]:>8.4f}{own:>+9.3f}")
+        weak = [(c, m, q) for c, m, q in pvalues if c < trained]
+        adjusted = holm([q for _, _, q in weak])
+        gains = [f"{c:g}" for (c, m, _), q in zip(weak, adjusted) if q < 0.05 and m > RES_AUC["c1"]]
+        weakest = (value(state, cues[0], "auc") - value("theta0", cues[0], "auc")) \
+            - (value(state, trained, "auc") - value("theta0", trained, "auc"))
+        mean, sem, pv = stats.one_sample(weakest)
+        print(f"  change at the weakest cue minus change at the trained one: {mean:+.4f} +- "
+              f"{sem:.4f}  p = {pv:.4f}; a gain in the area at a weaker cue (Holm): "
+              f"{', '.join(gains) or 'none'}")
+
+
+def ladder(args):
+    """Blocks 12, 20b and 66: runs floored under the direct jump to a rotated read-out against the
+    closed-loop ladder. A run is floored if its largest d' over the second half stays below 0.2;
+    the contrast is the per-network difference of floored fractions."""
+    rows = [r for r in runs.read(f"{args.results}/manifold_outside_reward_a90_*_net*.csv")]
+    kind = lambda r: "ladder" if "_auto_" in r["_file"] else ("direct" if "_s1_" in r["_file"] else None)
+
+    def floored(r):
+        _, values = curve(r)
+        return float(max(values[len(values) // 2:]) < 0.2)
+    share = {k: by_net([r for r in rows if kind(r) == k], floored) for k in ("direct", "ladder")}
+    for label, lo, hi in (("networks 0-4", 0, 5), ("networks 5-9", 5, 10), ("networks 10-24", 10, 25)):
+        nets = sorted(n for n in set(share["direct"]) & set(share["ladder"]) if lo <= n < hi)
+        if not nets:
+            continue
+        count = lambda k: f"{int(sum(sum(share[k][n]) for n in nets))}/{sum(len(share[k][n]) for n in nets)}"
+        diff = [np.mean(share["direct"][n]) - np.mean(share["ladder"][n]) for n in nets]
+        mean, sem, pv = stats.one_sample(diff)
+        print(f"{label}: floored {count('direct')} under the direct jump, {count('ladder')} under the "
+              f"ladder; per network {mean:+.3f} +- {sem:.3f}, p = {pv:.4f}; direct worse on "
+              f"{sum(d > 0 for d in diff)}/{len(nets)} networks, ladder worse on "
+              f"{sum(d < 0 for d in diff)}")
+
+
 def correlate(x, y):
     from scipy.stats import pearsonr
     r, p = pearsonr(x, y)
@@ -1878,7 +1944,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "location-specific": location_specific, "wide-sweep": wide_sweep, "access": access,
           "neutral": neutral, "neutral-routes": neutral_routes,
           "headroom-context": headroom_context, "headroom-nonlinear": headroom_nonlinear,
-          "access-mlp": access_mlp, "dose-test": dose_test, "response": response,
+          "access-mlp": access_mlp, "dose-test": dose_test, "response": response, "cue-strength": cue_strength,
+          "ladder": ladder,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 

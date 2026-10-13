@@ -1102,6 +1102,29 @@ block64() {
     wait
 }
 
+# 65. No training: the saved networks read at weaker and stronger cues. A function that is there
+#     but weak is the case feedback on a neural signal is meant for; a weak cue makes one.
+block65() {
+    for net in $BATCH2; do
+        run "b65_cue_net$net" -m experiments.cue_strength --nets $net \
+            --out results/cue_strength_c1_net$net.csv
+    done
+    wait
+}
+
+# 66. The closed-loop ladder against the direct jump on the second batch of networks, with the
+#     commands of block 20b: a registered repeat of the contrast that was 0/30 against 16/30 runs
+#     floored on networks 0-9 and failed its rule at five networks.
+block66() {
+    for net in $BATCH2; do for c in 0 1 2; do
+        run "manifold_outside_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
+            --angle 90 --candidate $c
+        run "manifold_auto_net${net}_c$c" -m experiments.manifold --net $net --kind outside \
+            --angle 90 --candidate $c --auto --updates 6000
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"
