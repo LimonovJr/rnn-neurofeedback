@@ -14,8 +14,16 @@ network are all read on the same trials: two seeded samples, one to choose the d
 threshold on, one to report them on, and fixed held-out batches for the task loss with the noise
 off. The ROC of each state comes from one pass over the trials (`behaviour.roc_once`).
 
+The task loss itself falls when the criterion moves, and early in training that is most of what
+moves. So it is also read after the decoder's release margin has been recalibrated by a shift and
+a scale fitted on separate trials. What is left of the loss then is how well the margin tells the
+steps apart, whatever its level and gain: a continuous measure of discriminability, read on every
+step and not on a release.
+
 `--first-step` only takes one step of that length along the signal's gradient and sets the realised
-change of the task loss against its first-order prediction.
+change of both losses against the first-order prediction. For the recalibrated loss the prediction
+uses the gradient with the shift and scale held at their fitted values, which is the gradient of
+the loss already minimised over them.
 
     python -m experiments.dose --task context --arm k1 --net 10
 """
@@ -25,6 +33,8 @@ import os
 
 import numpy as np
 import torch
+
+import torch.nn.functional as F
 
 from src import behaviour, representation, runs, signals, tasks, trials
 from src.model import CKPT, load
@@ -87,11 +97,48 @@ def flat(tensors):
     return torch.cat([t.reshape(-1) for t in tensors])
 
 
-def held_batches(task, net, n=8):
+def held_batches(task, net, seed=900, n=8):
     cfg = TASKS[task]
-    source = trials.seeded(cfg["env"], 900 + net)
+    source = trials.seeded(cfg["env"], seed + net)
     return [trials.batch(source, 128, 20, window_ms=signals.WINDOW_MS, xy_from=cfg["xy_from"])
             for _ in range(n)]
+
+
+def recalibrated(margin, y, weight, scale, shift):
+    """The task loss of a release margin after a scale and a shift of it."""
+    z = scale * margin + shift
+    return (torch.where(y == 1, F.softplus(-z), F.softplus(z)) * weight).sum() / weight.sum()
+
+
+def margins(model, batches):
+    model.eval()
+    with torch.no_grad():
+        logits = [model(x, return_hidden=True)[0] for x, *_ in batches]
+    return (torch.cat([(l[..., 1] - l[..., 0]).reshape(-1) for l in logits]),
+            torch.cat([b[1].reshape(-1) for b in batches]),
+            torch.cat([b[2].reshape(-1) for b in batches]))
+
+
+def calibrate(margin, y, weight):
+    """The scale and shift of the margin that minimise the task loss on these steps: all that
+    recalibrating the decoder's output could do, the criterion included."""
+    scale = torch.ones((), requires_grad=True)
+    shift = torch.zeros((), requires_grad=True)
+    opt = torch.optim.LBFGS([scale, shift], max_iter=200, line_search_fn="strong_wolfe")
+
+    def closure():
+        opt.zero_grad()
+        loss = recalibrated(margin, y, weight, scale, shift)
+        loss.backward()
+        return loss
+    opt.step(closure)
+    return float(scale), float(shift)
+
+
+def resolved_loss(model, fit_on, held):
+    """Held-out task loss after recalibration on separate trials, with the fitted scale and shift."""
+    scale, shift = calibrate(*margins(model, fit_on))
+    return float(recalibrated(*margins(model, held), scale, shift)), scale, shift
 
 
 def task_loss(model, held):
@@ -129,34 +176,41 @@ def read(model, task, net, n, template=None):
     return {k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()}
 
 
-def first_step(model, task, step, length, held):
-    """One step of fixed length along the signal's gradient: the cosine to the task gradient, and
-    the realised change of the held-out task loss against -length <g_task, direction>."""
+def first_step(model, task, step, length, fit_on, held):
+    """One step of fixed length along the signal's gradient: its cosine to the task gradient and to
+    the gradient of the recalibrated loss, and the realised change of each held-out loss against
+    -length <gradient, direction>."""
     cfg = TASKS[task]
     params = trained(model)
     for p in model.parameters():
         p.requires_grad_(any(p is q for q in params))
+    before, (resolved, scale, shift) = task_loss(model, held), resolved_loss(model, fit_on, held)
     model.train()
     model.rec_noise = True
-    g_task = g_signal = 0.0
+    g_task = g_resolved = g_signal = 0.0
     for _ in range(4):
         batch = trials.batch(cfg["env"], 128, int(model.dt), window_ms=signals.WINDOW_MS,
                              xy_from=cfg["xy_from"])
-        g_task = g_task + flat(torch.autograd.grad(signals.task_step(0.0, 1.0)(model, batch)[0],
-                                                   params)).detach()
+        logits = model(batch[0], return_hidden=True)[0]
+        raw = cross_entropy(logits, batch[1], batch[2])
+        fixed = recalibrated(logits[..., 1] - logits[..., 0], batch[1], batch[2], scale, shift)
+        g_task = g_task + flat(torch.autograd.grad(raw, params, retain_graph=True)).detach()
+        g_resolved = g_resolved + flat(torch.autograd.grad(fixed, params)).detach()
         g_signal = g_signal + flat(torch.autograd.grad(step(model, batch)[0], params)).detach()
     unit = g_signal / g_signal.norm().clamp_min(1e-12)
-    before = task_loss(model, held)
     with torch.no_grad():
         i = 0
         for p in params:
             p.sub_(length * unit[i:i + p.numel()].view_as(p))
             i += p.numel()
-    realised = task_loss(model, held) - before
-    return dict(cos=round(float(torch.dot(g_task, g_signal) / (g_task.norm() * g_signal.norm())), 4),
-                rho=round(float(g_signal.norm() / g_task.norm()), 4),
-                predicted=round(-length * float(torch.dot(g_task, unit)) / 4, 6),
-                realised=round(realised, 6), task_loss=round(before, 5))
+    cosine = lambda g: round(float(torch.dot(g, g_signal) / (g.norm() * g_signal.norm())), 4)
+    predicted = lambda g: round(-length * float(torch.dot(g, unit)) / 4, 6)
+    return dict(cos=cosine(g_task), rho=round(float(g_signal.norm() / g_task.norm()), 4),
+                predicted=predicted(g_task), realised=round(task_loss(model, held) - before, 6),
+                task_loss=round(before, 5), cos_resolved=cosine(g_resolved),
+                predicted_resolved=predicted(g_resolved),
+                realised_resolved=round(resolved_loss(model, fit_on, held)[0] - resolved, 6),
+                resolved_loss=round(resolved, 5), scale=round(scale, 4), shift=round(shift, 4))
 
 
 def main():
@@ -187,11 +241,13 @@ def main():
     model = load(a.net, head=a.task)
     template = fit_template(a.net) if a.task == "context" and a.arm == "template" else None
     step = signal(a.task, a.arm, model, a.net)
-    held = held_batches(a.task, a.net)
+    held, fit_on = held_batches(a.task, a.net), held_batches(a.task, a.net, seed=950)
+    # the dose is chosen on one set of held-out trials and judged on another
+    chosen_on = held_batches(a.task, a.net, seed=980)
     identity = dict(task=a.task, arm=a.arm, net=a.net, lr=a.lr)
     if a.first_step:
         runs.write(a.out, dict(identity, length=a.first_step,
-                               **first_step(model, a.task, step, a.first_step, held)))
+                               **first_step(model, a.task, step, a.first_step, fit_on, held)))
         return
 
     doses = sorted(int(d) for d in a.doses.split(","))
@@ -203,19 +259,26 @@ def main():
         if upd not in doses:
             return
         moved = float(flat([q.detach() - q0 for q, q0 in zip(trained(m), start)]).norm())
+        resolved, scale, shift = resolved_loss(m, fit_on, held)
         row = dict(identity, dose=upd, moved=round(moved, 5),
                    moved_rel=round(float((m.W_rec.detach() - w_rec0).norm() / w_rec0.norm()), 5),
-                   loss=round(task_loss(m, held), 5), **read(m, a.task, a.net, a.n, template))
+                   loss=round(task_loss(m, held), 5), loss_resolved=round(resolved, 5),
+                   loss_resolved_select=round(resolved_loss(m, fit_on, chosen_on)[0], 5),
+                   scale=round(scale, 4), shift=round(shift, 4),
+                   **read(m, a.task, a.net, a.n, template))
         rows.append(row)
-        print(f"  [{a.task} {a.arm} net{a.net}] dose {upd:>3}  moved {moved:.4f}  loss "
-              f"{row['loss']:.4f}  AUC {row['auc']:.4f}  best d' {row['best_d']:+.3f}  own d' "
-              f"{row['own_d']:+.3f}", flush=True)
+        # a long run that dies keeps what it had read; the name without .part marks a finished one
+        runs.write(a.out + ".part", rows)
+        print(f"  [{a.task} {a.arm} net{a.net}] dose {upd:>4}  moved {moved:.4f}  loss "
+              f"{row['loss']:.4f}  recalibrated {resolved:.4f}  AUC {row['auc']:.4f}  best d' "
+              f"{row['best_d']:+.3f}  own d' {row['own_d']:+.3f}", flush=True)
 
     torch.manual_seed(a.rep)
     np.random.seed(a.rep)
     signals.loop(model, cfg["env"], step, doses[-1], a.lr, True, 1, hook, "cpu",
                  xy_from=cfg["xy_from"], log_every=10 ** 9)
     runs.write(a.out, rows)
+    os.remove(a.out + ".part")
 
 
 if __name__ == "__main__":

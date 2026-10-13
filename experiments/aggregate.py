@@ -1445,56 +1445,109 @@ def neutral_routes(args):
 
 
 RES_AUC = {"c1": 0.0106, "context": 0.0117}
+FEEDBACK = {"c1": ("axis", "k2", "neutral"), "context": ("k1", "k2", "neutral")}
+
+
+def holm(pvalues):
+    """Holm's step-down adjustment, in the order given."""
+    order = np.argsort(pvalues)
+    adjusted, running = np.empty(len(pvalues)), 0.0
+    for rank, i in enumerate(order):
+        running = max(running, (len(pvalues) - rank) * pvalues[i])
+        adjusted[i] = min(1.0, running)
+    return adjusted
 
 
 def dose_test(args):
-    """Block 63: each signal read along its dose. Per arm, the change against the start at every
-    dose; the dose chosen on the selection sample and the change of the area under the ROC at that
-    dose on the report sample; and the best feedback arm of the context task against that of c1,
-    network by network."""
+    """Block 63: each signal read along its dose, against the start, on trials shared by the states
+    of a network. A measure is read for the feedback arms only at doses where supervision itself
+    moves it: where the task's own signal shows nothing, a null of the others says nothing. For the
+    area under the ROC and for the recalibrated task loss, the dose of each arm is chosen on one
+    sample and judged on the other."""
     rows = runs.read(f"{args.results}/dose_*_net*.csv")
     at = defaultdict(dict)
     for r in rows:
-        at[r["task"], r["arm"], int(r["net"])][float(r["lr"]), int(r["dose"])] = r
-    chosen = {}
-    for task in sorted({k[0] for k in at}):
-        arms = sorted({k[1] for k in at if k[0] == task})
+        at[r["task"], float(r["lr"]), r["arm"], int(r["net"])][int(r["dose"])] = r
+    measures = (("auc", "auc_select", +1, "area under the ROC"),
+                ("loss_resolved", "loss_resolved_select", -1, "recalibrated task loss"))
+    judged = {}
+    for task, lr in sorted({k[:2] for k in at}):
+        arms = sorted({k[2] for k in at if k[:2] == (task, lr)}, key=lambda a: (a != "control", a))
+
+        def series(arm):
+            nets = sorted(k[3] for k in at if k[:3] == (task, lr, arm))
+            doses = sorted(d for d in at[task, lr, arm, nets[0]] if d > 0
+                           and all(d in at[task, lr, arm, n] for n in nets))
+            change = lambda key, d: np.array([float(at[task, lr, arm, n][d][key])
+                                              - float(at[task, lr, arm, n][0][key]) for n in nets])
+            return nets, doses, change
+
+        passing = {}
         for arm in arms:
-            nets = sorted(k[2] for k in at if k[:2] == (task, arm))
-            points = sorted({d for n in nets for d in at[task, arm, n] if d[1] > 0})
-            points = [d for d in points if all(d in at[task, arm, n] for n in nets)]
-            change = lambda key, d: np.array([float(at[task, arm, n][d][key])
-                                              - float(at[task, arm, n][d[0], 0][key]) for n in nets])
-            print(f"\n{task}, {arm} ({len(nets)} networks)")
-            print("     lr  dose    moved      loss             AUC, select      AUC, report"
-                  "              p    up    best d'    own d'")
-            for d in points:
-                moved = np.mean([float(at[task, arm, n][d]["moved"]) for n in nets])
-                mean, sem, pv = stats.one_sample(change("auc", d))
-                print(f"{d[0]:>7g}{d[1]:>6d}{moved:>9.4f}{change('loss', d).mean():>+10.4f}"
-                      f"{change('auc_select', d).mean():>+16.4f}{mean:>+13.4f} +- {sem:.4f}{pv:>9.4f}"
+            nets, doses, change = series(arm)
+            print(f"\n{task}, learning rate {lr:g}, {arm} ({len(nets)} networks)")
+            print("  dose    moved      loss   recalibrated             p    AUC, select"
+                  "    AUC, report             p    up   best d'    own d'"
+                  + ("   conjunction" if task == "context" else ""))
+            for d in doses:
+                moved = np.mean([float(at[task, lr, arm, n][d]["moved"]) for n in nets])
+                area, loss = stats.one_sample(change("auc", d)), stats.one_sample(change("loss_resolved", d))
+                print(f"{d:>6d}{moved:>9.4f}{change('loss', d).mean():>+10.4f}{loss[0]:>+10.4f} +- "
+                      f"{loss[1]:.4f}{loss[2]:>8.4f}{change('auc_select', d).mean():>+13.4f}"
+                      f"{area[0]:>+11.4f} +- {area[1]:.4f}{area[2]:>8.4f}"
                       f"{int((change('auc', d) > 0).sum()):>4d}/{len(nets)}"
-                      f"{change('best_d', d).mean():>+10.3f}{change('own_d', d).mean():>+10.3f}")
-            if not points:
+                      f"{change('best_d', d).mean():>+9.3f}{change('own_d', d).mean():>+10.3f}"
+                      + (f"{change('conjunction', d).mean():>+12.3f}" if task == "context" else ""))
+            if arm == "control":
+                for key, _, sign, label in measures:
+                    ok = []
+                    for d in doses:
+                        mean, _, pv = stats.one_sample(change(key, d))
+                        floor = RES_AUC[task] if key == "auc" else 0.0
+                        if pv < 0.05 and sign * mean > floor:
+                            ok.append(d)
+                    passing[key] = ok
+                    print(f"  supervision moves the {label} at doses {ok or 'none'}")
                 continue
-            best = max(points, key=lambda d: change("auc_select", d).mean())
-            gain = change("auc", best)
-            mean, sem, pv = stats.one_sample(gain)
-            verdict = "a gain" if pv < 0.05 and mean > RES_AUC[task] else "no gain"
-            print(f"  dose chosen on the selection sample: lr {best[0]:g}, {best[1]} updates; on the "
-                  f"report sample {mean:+.4f} +- {sem:.4f}, p = {pv:.4f}, resolution "
-                  f"{RES_AUC[task]}: {verdict}")
-            chosen[task, arm] = dict(zip(nets, gain))
-    feedback = lambda task: {a: g for (t, a), g in chosen.items()
-                             if t == task and a not in ("control", "template")}
-    if feedback("c1") and feedback("context"):
-        top = {t: max(feedback(t).items(), key=lambda kv: np.mean(list(kv[1].values())))
-               for t in ("c1", "context")}
-        nets = sorted(set(top["c1"][1]) & set(top["context"][1]))
-        mean, sem, pv = stats.paired([top["context"][1][n] for n in nets],
-                                     [top["c1"][1][n] for n in nets])
-        print(f"\nbest feedback arm on context ({top['context'][0]}) minus best on c1 "
-              f"({top['c1'][0]}): {mean:+.4f} +- {sem:.4f}  p = {pv:.4f}  ({len(nets)} networks)")
+            for key, select, sign, label in measures:
+                allowed = [d for d in doses if d in passing.get(key, [])]
+                if not allowed:
+                    print(f"  {label}: no dose at which supervision moves it; not interpretable")
+                    continue
+                best = max(allowed, key=lambda d: sign * change(select, d).mean())
+                mean, sem, pv = stats.one_sample(change(key, best))
+                judged[task, lr, arm, key] = dict(dose=best, p=pv, mean=mean, nets=nets,
+                                                  values=sign * change(key, best),
+                                                  chosen=sign * change(select, best).mean())
+                print(f"  {label}: dose chosen on the selection sample {best}; on the report "
+                      f"sample {mean:+.4f} +- {sem:.4f}, p = {pv:.4f}")
+    for task, lr in sorted({k[:2] for k in judged}):
+        for key, _, sign, label in measures:
+            arms = [a for a in FEEDBACK[task] if (task, lr, a, key) in judged]
+            if not arms:
+                continue
+            adjusted = holm([judged[task, lr, a, key]["p"] for a in arms])
+            floor = RES_AUC[task] if key == "auc" else 0.0
+            print(f"\n{task}, learning rate {lr:g}, {label}, Holm over {len(arms)} arms: "
+                  + "; ".join(f"{a} {judged[task, lr, a, key]['mean']:+.4f} (p {q:.4f}, "
+                              + ("gain" if q < 0.05 and sign * judged[task, lr, a, key]["mean"] > floor
+                                 else "no gain") + ")" for a, q in zip(arms, adjusted)))
+    for lr in sorted({k[1] for k in judged}):
+        for key, _, _, label in measures:
+            top = {}
+            for task in FEEDBACK:
+                arms = [a for a in FEEDBACK[task] if (task, lr, a, key) in judged]
+                if arms:
+                    top[task] = max(arms, key=lambda a: judged[task, lr, a, key]["chosen"])
+            if len(top) < 2:
+                continue
+            a, b = judged["context", lr, top["context"], key], judged["c1", lr, top["c1"], key]
+            nets = sorted(set(a["nets"]) & set(b["nets"]))
+            pick = lambda j: [j["values"][j["nets"].index(n)] for n in nets]
+            mean, sem, pv = stats.paired(pick(a), pick(b))
+            print(f"\nlearning rate {lr:g}, {label}: improvement of the best feedback arm on "
+                  f"context ({top['context']}) minus that on c1 ({top['c1']}) {mean:+.4f} +- "
+                  f"{sem:.4f}  p = {pv:.4f}  ({len(nets)} networks)")
 
 
 def correlate(x, y):

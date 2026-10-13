@@ -1057,20 +1057,33 @@ block62() {
     wait
 }
 
-# 63. The dose of a feedback signal: every signal read after 0 to 300 updates from the start, at
-#     two learning rates, on seeded trials shared by the states of a network. Supervision is the
-#     reference on each task; the template arm is exploratory.
+# 63. The dose of a feedback signal: every signal read along its run from the start, on seeded
+#     trials shared by the states of a network. Supervision is the reference on each task, and the
+#     grid at the usual learning rate runs far enough for it to raise the area under the ROC: a
+#     dose at which the task's own signal shows nothing says nothing about the others. The
+#     template arm, first in the queue, is the one a gain is expected from if from any. The short
+#     grid at a tenth of the learning rate spreads out the first few updates.
+DOSES_CONTEXT="0,1,2,5,10,25,50,100,150,300,500,1000,2000"
+DOSES_C1="0,1,2,5,10,25,50,100,150,300,600,1200"
 block63() {
-    for lr in 1e-4 1e-5; do for net in $BATCH2; do
-        for arm in axis k2 neutral control; do
-            run "b63_dose_c1_${arm}_lr${lr}_net$net" -m experiments.dose --task c1 --arm $arm \
-                --net $net --lr $lr
-        done
-        for arm in k1 k2 neutral template control; do
-            run "b63_dose_context_${arm}_lr${lr}_net$net" -m experiments.dose --task context \
-                --arm $arm --net $net --lr $lr
-        done
+    for net in $BATCH2; do for arm in template control k1 k2 neutral; do
+        run "b63_dose_context_${arm}_net$net" -m experiments.dose --task context --arm $arm \
+            --net $net --doses $DOSES_CONTEXT
     done; done
+    for net in $BATCH2; do for arm in axis control k2 neutral; do
+        run "b63_dose_c1_${arm}_net$net" -m experiments.dose --task c1 --arm $arm --net $net \
+            --doses $DOSES_C1
+    done; done
+    for net in $BATCH2; do
+        for arm in template control k1 k2 neutral; do
+            run "b63_dose_context_${arm}_lr1e-5_net$net" -m experiments.dose --task context \
+                --arm $arm --net $net --lr 1e-5
+        done
+        for arm in axis control k2 neutral; do
+            run "b63_dose_c1_${arm}_lr1e-5_net$net" -m experiments.dose --task c1 --arm $arm \
+                --net $net --lr 1e-5
+        done
+    done
     wait
 }
 
