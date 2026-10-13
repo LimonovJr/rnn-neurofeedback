@@ -1060,15 +1060,16 @@ block62() {
 # 63. The dose of a feedback signal: every signal read along its run from the start, on seeded
 #     trials shared by the states of a network. Supervision is the reference on each task, and the
 #     grid at the usual learning rate runs far enough for it to raise the area under the ROC: a
-#     dose at which the task's own signal shows nothing says nothing about the others. The
-#     template arm, first in the queue, is the one a gain is expected from if from any. The short
-#     grid at a tenth of the learning rate spreads out the first few updates.
+#     dose at which the task's own signal shows nothing says nothing about the others. On the
+#     context task that takes the task's own learning rate: at 1e-4 supervision had not raised the
+#     area after 500 updates. The template arm, first in the queue, is the one a gain is expected
+#     from if from any. The short grids at 1e-4 and 1e-5 spread out the first few updates.
 DOSES_CONTEXT="0,1,2,5,10,25,50,100,150,300,500,1000,2000"
 DOSES_C1="0,1,2,5,10,25,50,100,150,300,600,1200"
 block63() {
     for net in $BATCH2; do for arm in template control k1 k2 neutral; do
-        run "b63_dose_context_${arm}_net$net" -m experiments.dose --task context --arm $arm \
-            --net $net --doses $DOSES_CONTEXT
+        run "b63_dose_context_${arm}_lr3e-4_net$net" -m experiments.dose --task context \
+            --arm $arm --net $net --lr 3e-4 --doses $DOSES_CONTEXT
     done; done
     for net in $BATCH2; do for arm in axis control k2 neutral; do
         run "b63_dose_c1_${arm}_net$net" -m experiments.dose --task c1 --arm $arm --net $net \
@@ -1076,6 +1077,8 @@ block63() {
     done; done
     for net in $BATCH2; do
         for arm in template control k1 k2 neutral; do
+            run "b63_dose_context_${arm}_net$net" -m experiments.dose --task context \
+                --arm $arm --net $net
             run "b63_dose_context_${arm}_lr1e-5_net$net" -m experiments.dose --task context \
                 --arm $arm --net $net --lr 1e-5
         done
