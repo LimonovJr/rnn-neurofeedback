@@ -1,5 +1,5 @@
 """The figures of the paper, drawn from the same per-run CSVs as the tables in `aggregate`, so a
-figure and the table it illustrates cannot disagree. Six main figures and one supplementary.
+figure and the table it illustrates cannot disagree. Nine main figures and one supplementary.
 
     python -m experiments.figures                  # every figure into results/figures
     python -m experiments.figures calibration      # one of them
@@ -19,8 +19,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from experiments.aggregate import (BUDGET, SETTINGS, TRACKED, arm, by_net, per_net,  # noqa: E402
-                                   protocol, swept)
+from experiments.aggregate import (BUDGET, SETTINGS, TRACKED, arm, by_net, curve,  # noqa: E402
+                                   per_net, protocol, swept)
 from src import runs  # noqa: E402
 
 COLOURS = {"reward": "#d95f02", "control": "#1f78b4", "k2": "#1b9e77", "shuffled": "#7570b3",
@@ -69,22 +69,28 @@ def dots(ax, x, values, colour, jitter=0.08, mean_dx=0.22, label=None, hollow=Fa
 def headroom(args):
     """What better dynamics could still buy through the frozen decoder: H = C_B - C_A per network,
     on the cell tasks and on the context task."""
-    fig, ax = plt.subplots(figsize=(4.4, 2.7))
+    fig, ax = plt.subplots(figsize=(5.2, 2.7))
     labels = {"c1": "c1,\nintact", "c1r1": "c1, mild\ninput noise",
               "c1r3": "c1, stronger\ninput noise", "patch": "patch cell",
-              "context": "context\n(positive control)"}
-    for i, setting in enumerate(labels):
+              "context": "context\n(positive control)",
+              "context Aplus": "context, against\na nonlinear\nread-out"}
+    for i, key in enumerate(labels):
+        # the last point is the same context runs with the nonlinear read-out as the lower arm
+        setting, lower = (key.split() + ["A"])[:2]
         rows = runs.read(f"{args.results}/headroom_{setting}_*_net*.csv")
         c = {a: by_net([r for r in rows if r["arm"] == a], lambda r: float(r["C_mean"]))
-             for a in ("A", "B")}
-        nets = sorted(set(c["A"]) & set(c["B"]))
-        dots(ax, i, [st.median(c["B"][n]) - st.median(c["A"][n]) for n in nets],
-             COLOURS["reward"] if setting == "context" else "#555555")
+             for a in (lower, "B")}
+        nets = sorted(set(c[lower]) & set(c["B"]))
+        colour = "#e6ab02" if lower == "Aplus" else (COLOURS["reward"] if setting == "context"
+                                                      else "#555555")
+        dots(ax, i, [st.median(c["B"][n]) - st.median(c[lower][n]) for n in nets], colour)
     labels = list(labels.values())
     ax.axhline(0, color="k", lw=0.5)
     ax.axhspan(-RES_BEHAVIOUR, RES_BEHAVIOUR, color="0.9", zorder=0, lw=0)
     ax.set_xticks(range(len(labels)), labels, fontsize=6.5)
     ax.set_ylabel("headroom (d′):\nall weights − read-out only")
+    # the share a nonlinear read-out takes is the drop from the fifth point to the sixth
+    ax.axvline(4.5, color="0.8", lw=0.5, ls=":")
     ax.set_title("Decoder-limited tasks, dynamics-limited context")
     save(fig, args.out, "fig1_headroom")
 
@@ -565,9 +571,124 @@ def wrong_sign(args):
     save(fig, args.out, "fig7_wrong_sign")
 
 
+DOSE_ARMS = {
+    "c1": (("control", "supervision", COLOURS["control"], "-"),
+           ("axis", "axis +1", "#e6ab02", "-"),
+           ("k2", "κ 2", COLOURS["k2"], "-"),
+           ("neutral", "neutral κ 2", "0.45", "-")),
+    "context": (("control", "supervision", COLOURS["control"], "-"),
+                ("k1", "κ 1, cue", "#e6ab02", "-"),
+                ("k2", "κ 2, cue", COLOURS["k2"], "-"),
+                ("neutral", "neutral κ 2", "0.45", "-"),
+                ("template", "template (exploratory)", COLOURS["shuffled"], "--"))}
+
+
+def dose(args):
+    """Block 63 on the long grids: every arm from the start, as a change against the start per
+    network, in the raw task loss, in the task loss with the criterion taken out, and in the area
+    under the ROC."""
+    grids = (("c1", "", "c1, learning rate 1e-4"),
+             ("context", "_lr0.0003", "context, learning rate 3e-4"))
+    measures = (("loss", "raw task loss\n(carries the criterion)"),
+                ("loss_resolved", "task loss, recalibrated"), ("auc", "area under the ROC"))
+    resolution = {"c1": 0.0106, "context": 0.0117}
+    found = {(task, a): runs.read(f"{args.results}/dose_{task}_{a}{suffix}_net*.csv")
+             for task, suffix, _ in grids for a, *_ in DOSE_ARMS[task]}
+    if not all(found.values()):
+        print("dose: runs missing")
+        return
+    fig, axes = plt.subplots(2, 3, figsize=(9.6, 5.2))
+    for row, (task, _, title) in enumerate(grids):
+        for a, label, colour, style in DOSE_ARMS[task]:
+            per = defaultdict(dict)
+            for r in found[task, a]:
+                per[int(r["net"])][int(r["dose"])] = r
+            doses = sorted(set.intersection(*(set(d) for d in per.values())))
+            for col, (key, _) in enumerate(measures):
+                change = np.array([[float(per[n][d][key]) - float(per[n][0][key]) for d in doses]
+                                   for n in sorted(per)])
+                mean = change.mean(0)
+                sem = change.std(0, ddof=1) / np.sqrt(len(change))
+                ax = axes[row, col]
+                ax.plot(doses, mean, style, color=colour, lw=1.1, label=label)
+                ax.fill_between(doses, mean - sem, mean + sem, color=colour, alpha=0.18, lw=0)
+        for col, (key, name) in enumerate(measures):
+            ax = axes[row, col]
+            ax.set_xscale("symlog", linthresh=1)
+            ax.axhline(0, color="k", lw=0.5)
+            if key == "auc":
+                ax.axhspan(-resolution[task], resolution[task], color="0.9", zorder=0, lw=0)
+            if key == "loss":
+                # the template and the axis target climb far above; the panel is for the first updates
+                ax.set_ylim(-0.45, 0.45)
+            ax.set_title(name if row == 0 else "")
+            ax.set_xlabel("updates" if row == 1 else "")
+            ax.set_ylabel(f"{title}\nchange against the start" if col == 0 else "")
+        axes[row, 0].legend(fontsize=6, loc="upper left", handlelength=1.4)
+    fig.tight_layout()
+    save(fig, args.out, "fig8_dose")
+
+
+def ladder(args):
+    """Blocks 12, 20b and 66: the share of runs per network that never left d' = 0 after the decision
+    read-out was rotated out of the manifold in one step, against the closed-loop ladder, and the
+    d' curves of networks 10-24."""
+    rows = runs.read(f"{args.results}/manifold_outside_reward_a90_*_net*.csv")
+    kind = lambda r: "ladder" if "_auto_" in r["_file"] else ("direct" if "_s1_" in r["_file"] else None)
+    rows = [r for r in rows if kind(r)]
+    if not any(int(r["net"]) >= 10 for r in rows):
+        print("ladder: runs missing")
+        return
+
+    def floored(r):
+        _, values = curve(r)
+        return float(max(values[len(values) // 2:]) < 0.2)
+
+    colour = {"direct": COLOURS["reward"], "ladder": COLOURS["k2"]}
+    share = {k: {n: float(np.mean(v)) for n, v in by_net([r for r in rows if kind(r) == k],
+                                                           floored).items()}
+             for k in ("direct", "ladder")}
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 2.7), sharey=False,
+                             gridspec_kw={"width_ratios": [1.1, 1, 1]})
+    ax = axes[0]
+    sets = (("0–4", 0, 5), ("5–9", 5, 10), ("10–24", 10, 25))
+    for i, (_, lo, hi) in enumerate(sets):
+        nets = sorted(n for n in set(share["direct"]) & set(share["ladder"]) if lo <= n < hi)
+        x = 3 * i
+        for n in nets:
+            ax.plot([x, x + 1], [share["direct"][n], share["ladder"][n]], color="0.75", lw=0.6,
+                    zorder=1)
+        for dx, k in ((0, "direct"), (1, "ladder")):
+            dots(ax, x + dx, [share[k][n] for n in nets], colour[k], jitter=0.04, mean_dx=0.0)
+    ax.set_xticks([3 * i + dx for i in range(len(sets)) for dx in (0, 1)],
+                  ["direct", "ladder"] * len(sets), fontsize=6.5)
+    for i, (name, _, _) in enumerate(sets):
+        ax.text(3 * i + 0.5, 1.12, f"networks {name}", ha="center", fontsize=7)
+    ax.set_ylim(-0.08, 1.18)
+    ax.set_xlim(-0.9, 7.9)
+    ax.set_ylabel("share of runs floored")
+    ax.set_title("Floored under the direct jump, not the ladder", pad=14)
+
+    for ax, k, name in ((axes[1], "direct", "Direct jump, networks 10–24"),
+                        (axes[2], "ladder", "Ladder, networks 10–24")):
+        for r in rows:
+            if int(r["net"]) >= 10 and kind(r) == k:
+                updates, values = curve(r)
+                ax.plot(updates, values, color=colour[k], lw=0.5, alpha=0.5)
+        ax.axhline(0.2, color="k", lw=0.5, ls=":")
+        ax.set_xlim(0, 6000)
+        ax.set_ylim(-3.6, 2.6)
+        ax.set_xlabel("updates")
+        ax.set_title(name)
+    axes[1].set_ylabel("d′")
+    fig.tight_layout()
+    save(fig, args.out, "fig9_ladder")
+
+
 FIGURES = {"headroom": headroom, "one-roc": one_roc, "calibration": calibration,
            "context-deficit": context_deficit, "representational": representational,
-           "loss-anatomy": loss_anatomy, "wrong-sign": wrong_sign, "adaptive": adaptive}
+           "loss-anatomy": loss_anatomy, "wrong-sign": wrong_sign, "dose": dose,
+           "ladder": ladder, "adaptive": adaptive}
 
 
 def main():
