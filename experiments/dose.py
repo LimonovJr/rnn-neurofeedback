@@ -43,7 +43,8 @@ from src.training import cross_entropy
 TASKS = {"c1": dict(env=tasks.sameloc(*tasks.C1), score=behaviour.detection, xy_from="target",
                     arms=("axis", "k2", "neutral", "control")),
          "context": dict(env=tasks.context(), score=behaviour.go_nogo, xy_from="cue",
-                         arms=("k1", "k2", "neutral", "template", "control"))}
+                         arms=("k1", "k2", "neutral", "template", "template_trial",
+                               "template_permuted", "template_go", "template_nogo", "control"))}
 DOSES = (0, 1, 2, 5, 10, 25, 50, 100, 150, 300)
 SUPERVISED = "nf_context_b60/nf_context_control_lam1_n2000_net{net}_r12_u8000.pt"
 
@@ -58,9 +59,14 @@ def decision_states(model, env_fn, n):
     return np.array(X), np.array(go)
 
 
-def fit_template(net, n=2000):
+def fit_template(net, n=2000, calibrated=False):
     """A linear decoder of go against no-go on the supervised end state of the same network, folded
-    into one weight vector and a bias."""
+    into one weight vector and a bias.
+
+    Fitted there, it reads every trial of the starting network as no-go by a wide margin, so a
+    target of no-go is met already and has no gradient. `calibrated` keeps its direction and
+    centres and scales its output on the starting network's own trials, as a decoded-feedback
+    decoder is calibrated on the subject it is used with."""
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
 
@@ -72,6 +78,11 @@ def fit_template(net, n=2000):
     clf = LogisticRegression(max_iter=2000, C=1.0).fit(scaler.transform(X), go)
     w = clf.coef_[0] / scaler.scale_
     b = float(clf.intercept_[0]) - float(np.sum(clf.coef_[0] * scaler.mean_ / scaler.scale_))
+    if calibrated:
+        start = load(net, head="context")
+        start.eval()
+        z = decision_states(start, trials.seeded(TASKS["context"]["env"], 400 + net), n)[0] @ w + b
+        w, b = w / z.std(), float((b - z.mean()) / z.std())
     return torch.tensor(w, dtype=torch.float32), b
 
 
@@ -85,7 +96,11 @@ def signal(task, arm, model, net):
         return signals.neutral_step(2.0, signals.neutral_readout(model, env_fn, net))
     if arm == "axis":
         return signals.axis_step(representation.decision_axis_target(model, env_fn, 1.0, seed=net))
-    return signals.template_step(*fit_template(net))
+    # block 63's template as it was; the others are calibrated on the start, and the part after
+    # "template_" says what the signal knows about each trial's answer
+    if arm == "template":
+        return signals.template_step(*fit_template(net))
+    return signals.template_step(*fit_template(net, calibrated=True), labels=arm.split("_", 1)[1])
 
 
 def trained(model):
@@ -226,6 +241,9 @@ def main():
     p.add_argument("--xy-from", choices=["target", "cue"],
                    help="what the positional targets regress toward, if not the task's own: on the "
                         "context task `target` is the probe, which the first gradient analysis used")
+    p.add_argument("--cue", type=float,
+                   help="c1 only: train and read at this cue strength instead of the trained one")
+    p.add_argument("--save", help="keep the state after the last dose here")
     p.add_argument("--out")
     a = p.parse_args()
     assert a.arm in TASKS[a.task]["arms"], f"{a.task} has arms {TASKS[a.task]['arms']}"
@@ -233,13 +251,19 @@ def main():
     tag = ("" if a.lr == 1e-4 else f"_lr{a.lr:g}") + (f"_{a.xy_from}" if a.xy_from else "")
     if a.xy_from:
         TASKS[a.task]["xy_from"] = a.xy_from
+    if a.cue is not None:
+        assert a.task == "c1", "--cue is for c1"
+        _, target, distractor = tasks.C1
+        TASKS["c1"]["env"] = tasks.sameloc(a.cue, target, distractor)
+        tag += f"_cue{a.cue:g}"
     a.out = a.out or f"results/{kind}_{a.task}_{a.arm}{tag}_net{a.net}.csv"
     if os.path.exists(a.out):
         print(f"[skip] {a.out} exists", flush=True)
         return
     cfg = TASKS[a.task]
     model = load(a.net, head=a.task)
-    template = fit_template(a.net) if a.task == "context" and a.arm == "template" else None
+    template = (fit_template(a.net, calibrated=a.arm != "template") if a.arm.startswith("template")
+                else None)
     step = signal(a.task, a.arm, model, a.net)
     held, fit_on = held_batches(a.task, a.net), held_batches(a.task, a.net, seed=950)
     # the dose is chosen on one set of held-out trials and judged on another
@@ -277,6 +301,10 @@ def main():
     np.random.seed(a.rep)
     signals.loop(model, cfg["env"], step, doses[-1], a.lr, True, 1, hook, "cpu",
                  xy_from=cfg["xy_from"], log_every=10 ** 9)
+    if a.save:
+        os.makedirs(os.path.dirname(a.save), exist_ok=True)
+        torch.save({"state_dict": model.state_dict(), "arm": a.arm, "net": a.net, "lr": a.lr,
+                    "updates": doses[-1]}, a.save)
     runs.write(a.out, rows)
     os.remove(a.out + ".part")
 

@@ -1125,6 +1125,59 @@ block66() {
     wait
 }
 
+# 67. No training: whether a go/no-go template fitted on one network's trained state reads
+#     another's, the model's version of a target taken from a healthy group.
+block67() {
+    run "b67_template_transfer" -m experiments.template_transfer
+    wait
+}
+
+# 68. Feedback, stage 1: every arm of the template ladder from the start on the context task, 2000
+#     updates at the task's learning rate, the end state kept for practice. The template arms are
+#     a ladder by what the signal knows about each trial's answer: nothing, one class for every
+#     trial, the answer; block 63's uncalibrated template and supervision beside them.
+STAGE1="template_trial template_permuted template_go template_nogo control template neutral k2"
+block68() {
+    local ck
+    ck=$($PY -c "from src.model import CKPT; print(CKPT)")
+    for net in $BATCH2; do for arm in $STAGE1; do
+        run "b68_stage1_${arm}_net$net" -m experiments.dose --task context --arm $arm --net $net \
+            --lr 3e-4 --doses 0,2000 --out results/practice_stage1_context_${arm}_net$net.csv \
+            --save "$ck/practice_context/${arm}_net$net.pt"
+    done; done
+    wait
+}
+
+# 69. Feedback, stage 2: practice of the decision read-out alone, recurrent weights frozen, on the
+#     start and on every end state of block 68. Prediction: the oracle goes further than the start
+#     after equal practice, the arms that do not know the answer do not. 69m is the same with the
+#     nonlinear head.
+block69() {
+    for net in $BATCH2; do for state in theta0 $STAGE1; do
+        run "b69_practice_linear_${state}_net$net" -m experiments.practice --net $net \
+            --state $state --head linear
+    done; done
+    wait
+}
+
+block69m() {
+    for net in $BATCH2; do for state in theta0 $STAGE1; do
+        run "b69_practice_mlp_${state}_net$net" -m experiments.practice --net $net \
+            --state $state --head mlp
+    done; done
+    wait
+}
+
+# 70. Feedback given under a weak cue: the magnified and the neutral targets trained at cue 0.15 and
+#     read there, with supervision at the same cue as the positive control. Expected: no gain.
+block70() {
+    for net in $BATCH2; do for arm in control k2 neutral; do
+        run "b70_weakcue_${arm}_net$net" -m experiments.dose --task c1 --cue 0.15 --arm $arm \
+            --net $net --doses 0,300,600,1200 --out results/weakcue_c1_${arm}_net$net.csv
+    done; done
+    wait
+}
+
 main() {
     for b in "$@"; do
         echo "=== block $b started $(date)"

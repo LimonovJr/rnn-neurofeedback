@@ -204,17 +204,32 @@ def decision_window(h, delay_mask, steps=6):
     return h.gather(1, index[..., None].expand(-1, -1, h.shape[-1])).mean(1)
 
 
-def template_step(w, b):
+TEMPLATE_LABELS = ("trial", "permuted", "go", "nogo")
+
+
+def template_step(w, b, labels="trial"):
     """A target taken from a network that can do the task: a frozen linear decoder of go against
     no-go, fitted on the decision-time state of a trained network, is trained through on the
     network that cannot. The decoded-neurofeedback analogue is a target pattern taken from a
     localiser or from a healthy group. No task term, and nothing passes through the decision
-    read-out."""
+    read-out.
+
+    `labels` sets what the signal knows about the answer. `trial` is each trial's own go/no-go,
+    which on the context task is the answer itself. `permuted` shuffles those labels within the
+    batch, so the signal knows nothing. `go` and `nogo` ask for one class on every trial, as
+    decoded neurofeedback induces one pattern for a whole block whatever the trial is."""
+    assert labels in TEMPLATE_LABELS, labels
+
     def step(model, batch):
         x, y, _, _, _, delay_mask, _ = batch
         _, _, h = model(x, return_hidden=True)
         logit = decision_window(h, delay_mask) @ w + b
-        loss = F.binary_cross_entropy_with_logits(logit, (y == 1).any(1).float())
+        go = (y == 1).any(1).float()
+        if labels == "permuted":
+            go = go[torch.randperm(len(go))]
+        elif labels != "trial":
+            go = torch.full_like(go, float(labels == "go"))
+        loss = F.binary_cross_entropy_with_logits(logit, go)
         return loss, {"template_loss": loss.detach()}
     return step
 
