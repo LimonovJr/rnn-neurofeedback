@@ -1469,13 +1469,113 @@ def holm(pvalues):
     return adjusted
 
 
-def dose_test(args):
+def template_transfer(args):
+    """Block 67: a go/no-go template fitted on one network's trained state, applied unit by unit to
+    another's. It transfers if other networks' templates read a network's trained state at least
+    halfway from chance to its own template, on the mean over pairs."""
+    rows = runs.read(f"{args.results}/template_transfer_context.csv")
+    if not rows:
+        print("no runs")
+        return
+    acc = lambda net, state, own: [float(r["accuracy"]) for r in rows if int(r["net"]) == net
+                                   and r["state"] == state and int(r["own"]) == own]
+    nets = sorted({int(r["net"]) for r in rows})
+    print("net   own, start   others, start   own, trained   others, trained")
+    table = {k: [] for k in ("own0", "other0", "own1", "other1")}
+    for n in nets:
+        values = (acc(n, "theta0", 1)[0], np.mean(acc(n, "theta0", 0)),
+                  acc(n, "supervised", 1)[0], np.mean(acc(n, "supervised", 0)))
+        for k, v in zip(table, values):
+            table[k].append(v)
+        print(f"{n:>3}" + "".join(f"{v:>15.3f}" for v in values))
+    own, other = np.mean(table["own1"]), np.mean(table["other1"])
+    bar = 0.5 + (own - 0.5) / 2
+    print(f"mean" + "".join(f"{np.mean(v):>15.3f}" for v in table.values()))
+    print(f"on the trained state: own {own:.3f}, others {other:.3f}, the bar {bar:.3f} -> "
+          + ("transfers" if other >= bar else "does not transfer"))
+
+
+PRACTICE_ARMS = ("template_trial", "template_permuted", "template_go", "template_nogo", "control",
+                 "template", "neutral", "k2")
+
+
+def practice(args):
+    """Blocks 68 and 69: feedback, then practice of the decision read-out alone, against the same
+    practice on the start. Q1 the oracle gains and beats the permuted null; Q2 either one-class arm
+    gains (Holm over the two); Q3 the permuted null does not; Q4 supervision above the oracle, the
+    oracle above the better one-class arm. The longer fit is read where the two fits differ by more
+    than block 57's limit."""
+    for head in ("linear", "mlp"):
+        rows = runs.read(f"{args.results}/practice_context_{head}_*_net*.csv")
+        if not rows:
+            continue
+        at = {(r["state"], int(r["net"])): r for r in rows}
+        states = [s for s in ("theta0",) + PRACTICE_ARMS if any(k[0] == s for k in at)]
+        nets = sorted(n for n in {k[1] for k in at} if all((s, n) in at for s in states))
+        v = lambda state, key: np.array([float(at[state, n][key]) for n in nets])
+        print(f"\n{head} read-out, {len(nets)} networks; best-threshold d' and area under the ROC")
+        print("state                frozen    practised   twice   conjunction   AUC frozen  practised"
+              "   twice   twice - practised")
+        shift = {}
+        for s in states:
+            shift[s] = (v(s, "longer_best_d") - v(s, "refit_best_d")).mean()
+            print(f"{s:<18}{v(s, 'frozen_best_d').mean():>8.3f}{v(s, 'refit_best_d').mean():>11.3f}"
+                  f"{v(s, 'longer_best_d').mean():>9.3f}{v(s, 'conjunction').mean():>12.3f}"
+                  f"{v(s, 'frozen_auc').mean():>13.3f}{v(s, 'refit_auc').mean():>10.3f}"
+                  f"{v(s, 'longer_auc').mean():>9.3f}{shift[s]:>+14.3f}")
+        fit = "longer" if any(abs(x) > 0.068 for x in shift.values()) else "refit"
+        print(f"fits within 0.068 on every state: {fit == 'refit'}; read: "
+              f"{'twice the practice' if fit == 'longer' else 'the first fit'}")
+        against = {}
+        print("\nagainst the start after equal practice   best d'              p    up    AUC"
+              "                 p   frozen best d'   against the start with twice the practice")
+        for s in states[1:]:
+            d = stats.one_sample(v(s, f"{fit}_best_d") - v("theta0", f"{fit}_best_d"))
+            a = stats.one_sample(v(s, f"{fit}_auc") - v("theta0", f"{fit}_auc"))
+            frozen = (v(s, "frozen_best_d") - v("theta0", "frozen_best_d")).mean()
+            budget = (v(s, "refit_best_d") - v("theta0", "longer_best_d")).mean()
+            against[s] = d
+            up = int((v(s, f"{fit}_best_d") > v("theta0", f"{fit}_best_d")).sum())
+            print(f"  {s:<18}{d[0]:>+8.3f} +- {d[1]:.3f}{d[2]:>9.4f}{up:>4d}/{len(nets)}"
+                  f"{a[0]:>+9.4f} +- {a[1]:.4f}{a[2]:>8.4f}{frozen:>+12.3f}{budget:>+20.3f}")
+        gain = lambda mean, p: p < 0.05 and mean > RES_BEHAVIOUR
+        key = f"{fit}_best_d"
+        if "template_trial" in against and "template_permuted" in against:
+            over = stats.paired(v("template_trial", key), v("template_permuted", key))
+            q1 = gain(against["template_trial"][0], against["template_trial"][2]) \
+                and over[2] < 0.05 and over[0] > 0
+            print(f"Q1 oracle: {against['template_trial'][0]:+.3f} against the start, "
+                  f"{over[0]:+.3f} +- {over[1]:.3f} (p = {over[2]:.4f}) against the permuted null "
+                  f"-> {'gain' if q1 else 'no gain'}")
+        one_class = [s for s in ("template_go", "template_nogo") if s in against]
+        if one_class:
+            adjusted = holm([against[s][2] for s in one_class])
+            print("Q2 one class per block, Holm: " + "; ".join(
+                f"{s} {against[s][0]:+.3f} (p {q:.4f}, {'gain' if gain(against[s][0], q) else 'no gain'})"
+                for s, q in zip(one_class, adjusted)))
+        if "template_permuted" in against:
+            m, _, pv = against["template_permuted"]
+            print(f"Q3 permuted null: {m:+.3f} (p {pv:.4f}) -> {'a gain' if gain(m, pv) else 'no gain'}")
+        if {"control", "template_trial"} <= set(against) and one_class:
+            top = max(one_class, key=lambda s: against[s][0])
+            ceiling_ = stats.paired(v("control", key), v("template_trial", key))
+            ladder_ = stats.paired(v("template_trial", key), v(top, key))
+            print(f"Q4 supervision - oracle {ceiling_[0]:+.3f} (p {ceiling_[2]:.4f}); oracle - "
+                  f"{top} {ladder_[0]:+.3f} (p {ladder_[2]:.4f})")
+
+
+def weak_cue(args):
+    """Block 70: feedback trained and read at a weak cue, by the rule of the dose test."""
+    dose_test(args, "weakcue_c1_*_net*.csv")
+
+
+def dose_test(args, pattern="dose_*_net*.csv"):
     """Block 63: each signal read along its dose, against the start, on trials shared by the states
     of a network. A measure is read for the feedback arms only at doses where supervision itself
     moves it: where the task's own signal shows nothing, a null of the others says nothing. For the
     area under the ROC and for the recalibrated task loss, the dose of each arm is chosen on one
     sample and judged on the other."""
-    rows = runs.read(f"{args.results}/dose_*_net*.csv")
+    rows = runs.read(f"{args.results}/{pattern}")
     at = defaultdict(dict)
     for r in rows:
         at[r["task"], float(r["lr"]), r["arm"], int(r["net"])][int(r["dose"])] = r
@@ -1956,7 +2056,8 @@ TABLES = {"headroom": headroom, "control": control, "resolutions": resolutions,
           "neutral": neutral, "neutral-routes": neutral_routes,
           "headroom-context": headroom_context, "headroom-nonlinear": headroom_nonlinear,
           "access-mlp": access_mlp, "dose-test": dose_test, "response": response, "cue-strength": cue_strength,
-          "ladder": ladder,
+          "ladder": ladder, "template-transfer": template_transfer, "practice": practice,
+          "weak-cue": weak_cue,
           "wide-sweep-b60": lambda args: wide_sweep(args, "b60_"),
           "context-optimum-b60": lambda args: context_optimum(args, "b60_")}
 
