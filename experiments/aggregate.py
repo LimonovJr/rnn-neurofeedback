@@ -1373,6 +1373,17 @@ def access_mlp(args):
               f"{after[2]:>9.4f}{sum(x < 0 for x in d['head']):>5d}/{len(nets)}"
               f"{d['head'].mean() / d['linear'].mean():>12.2f} ({lo:.2f} to {hi:.2f})"
               f"{d['longer'].mean() / d['linear'].mean():>22.2f}")
+    # where the two fits differ by more than block 57's limit, the longer one is the one to read
+    print("with twice the updates     nonlinear              p   below   nonlinear / linear (95 % bootstrap)")
+    for state in states:
+        linear_d = v(linear, state, "refit_best_d") - v(linear, "theta0", "refit_best_d")
+        longer_d = v(head, state, "longer_best_d") - v(head, "theta0", "longer_best_d")
+        shift = (v(head, state, "longer_best_d") - v(head, state, "refit_best_d")).mean()
+        mean, sem, pv = stats.one_sample(longer_d)
+        lo, hi = np.percentile(longer_d[draws].mean(1) / linear_d[draws].mean(1), [2.5, 97.5])
+        print(f"{state:<22}{mean:>+10.3f} +- {sem:.3f}{pv:>9.4f}{sum(x < 0 for x in longer_d):>5d}/"
+              f"{len(nets)}{longer_d.mean() / linear_d.mean():>12.2f} ({lo:.2f} to {hi:.2f})"
+              f"   fits differ by {shift:+.3f} ({'within' if abs(shift) <= 0.068 else 'beyond'} 0.068)")
 
 
 def neutral(args):
