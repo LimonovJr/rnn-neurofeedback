@@ -8,7 +8,7 @@ exclusive-or is not: if the frozen dynamics have already linearised it, the task
 rather than the instrument being blunt.
 
 This uses the earlier protocol -- best checkpoint, unequal restart counts between arms -- because
-that is how the number in the report was produced. It is read for its order of magnitude.
+that is how the first estimate (1.58) was produced. It is read for its order of magnitude.
 
     python -m experiments.positive_control --net 0
 """

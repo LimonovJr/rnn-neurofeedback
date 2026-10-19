@@ -1,92 +1,48 @@
-# Neurofeedback in a recurrent network
+# Neurofeedback through a fixed decoder in a recurrent network
 
-![Python](https://img.shields.io/badge/python-3.10-blue)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)
+Code for a modelling study of what feedback signals change when they are delivered through a decoder
+that stays fixed while the network learns. The network is a leaky rate network of 180 units with
+Dale's law and topographic connectivity, pretrained on a cued detection task (c1). Behaviour goes
+through a frozen decision read-out. The positional feedback signals are computed by a second frozen
+read-out, of the cued position. Feedback trains the recurrent weights only, and each signal is
+compared with ordinary supervised training through the same decoder at the same budget.
 
-Neurofeedback studies report that a neural measure changed, and the field usually assumes that this
-is a step toward better behaviour. That assumption folds three things into one number: what
-information the code **contains**, whether it **reaches behaviour** through a decoder that did not
-change, and how much of the task the code could support **at all** if the decoder were allowed to
-re-adapt. This repository measures the three separately in a biologically constrained recurrent
-network, so that "did the signal work" can be asked with a denominator.
+Two tasks sit at the two ends of a headroom axis. Headroom is what training all weights reaches
+from a frozen state minus what training the read-out alone reaches from the same state (C_B − C_A,
+in d′). It is 0.27 on c1, where the decoder is the bottleneck, and 1.92 on a context-reversal task
+whose go rule is an exclusive-or that the pretrained dynamics do not compute.
 
-The denominator is the headroom. From one frozen state, train only the read-out and record the best
-behaviour it reaches (C_A); from the same state, train everything, dynamics included (C_B).
+## Findings
 
-```mermaid
-flowchart LR
-    T["frozen state"] --> A["arm A<br/>read-out only"]
-    T --> B["arm B<br/>all weights"]
-    A --> CA["C_A"]
-    B --> CB["C_B"]
-    CA --> H["H = C_B − C_A"]
-    CB --> H
-```
+Every number below is rebuilt from the per-run CSVs by `experiments.aggregate`. Networks 0–4 were
+used to find the effects and networks 10–24 to test them, with the predictions written before the
+runs.
 
-Neurofeedback changes recurrent weights, so it is a special case of arm B: H is an upper bound on
-what any neurofeedback signal can achieve on that network and that task. Behaviour is measured in
-d′, and 0.068 is the smallest difference this setup can resolve.
-
-## What the measurements say
-
-Headroom on the same protocol — four restarts per arm, equal budgets, the ceiling averaged over six
-checkpoints and re-evaluated on an independent 10 000-trial draw, median across restarts, paired
-within network:
-
-| Setting | n | H | SEM | p |
-|---|---|---|---|---|
-| c1, intact | 5 | 0.266 | 0.057 | 0.010 |
-| c1, mild input noise | 5 | 0.200 | 0.045 | 0.011 |
-| c1, stronger input noise | 5 | 0.210 | 0.035 | 0.004 |
-| Patch cell | 5 | 0.084 | 0.015 | 0.005 |
-| Context reversal (positive control) | 3 | 1.581 | 0.425 | 0.065 |
-
-The variable that moves headroom by an order of magnitude is not how degraded the dynamics are but
-whether their structure matches what the task demands: a ladder of input noise lowers both ceilings
-together and leaves the fraction a frozen read-out cannot reach unchanged, while a task that
-requires a conjunction the current dynamics do not compute gives H = 1.58.
-
-At the small-headroom point, two of three neurofeedback signals put measurably more structure into
-the code (+0.029 and +0.019 crossnobis against an equal-budget control, both well above the 0.0015
-resolution) and none of them moved behaviour through the unchanged decoder. At the large-headroom
-point, where the signals were expected to separate favourably, all three ended up **below** plain
-supervised training at the same budget — joint minus control −0.300 (p = 0.024), reward minus
-control −0.505 (p = 0.005) — and the follow-up measurements attribute the deficit to the signals
-building the conjunction the task needs slightly more slowly, not to their building the wrong code.
-
-### Follow-up: what the signal is credited through
-
-The follow-up runs in `scripts/paper.sh` turn that negative result into a contrast. On the
-small-headroom task, reward on the trial outcome, fed back through the frozen decoder, beats
-supervised training of the same weights at the same learning rate and budget:
-
-| | reward − control | |
-|---|---|---|
-| level at 1200 updates, 10 000-trial evaluation | +0.251 ± 0.059, p = 0.013 | five of five networks |
-| same, independent repeat | +0.282 ± 0.065, p = 0.012 | |
-| recurrent weight movement | −0.0059 ± 0.0017, p = 0.028 | reward moves them less |
-| behaviour gained per unit of movement | ×4.2, p = 0.0096 | |
-| with the decoder re-fitted every 300 updates | +0.086, p = 0.37 | the advantage needs a fixed read-out |
-
-Every signal aimed at the representation goes the other way, including one with no task term at
-all. Asking the frozen position head to read the same positions twice as far apart improves the
-code by far more than its resolution (crossnobis +0.04 against 0.0015) and costs 1.4–1.7 of d′. A
-matched null that asks each trial for another trial's position — the same loss, moving the weights
-as far, asking for a code that carries nothing — pays part of that cost too; at equal movement the
-magnified target costs another −0.53 (p = 0.026) on top. Supervised training through the decoder
-moves the weights as far as that null does and gains behaviour instead.
-
-A single step along the positional gradient lowers the task loss at the start on five of five
-networks and stops doing so once the signal has been trained on, and a decoder that advances
-toward an outside-manifold mapping only while behaviour holds reaches it without ever dropping the
-network to the floor (0 of 15 runs, against 9 of 15 for the direct jump).
+- Where the decoder limits (c1), reward on the trial outcome and supervision end on one ROC at
+  different operating points. Reward is ahead by 0.35 d′ at the decoder's own threshold and level
+  with supervision at the best threshold and in the area under the ROC. Each learner ends near the
+  payoff optimum of the conditions it learned under.
+- Where the dynamics limit (context), the difference survives the threshold: supervision ends 0.14
+  higher in the area under the ROC. A read-out with one hidden layer on the frozen dynamics closes
+  about a third of the context headroom.
+- Targets aimed at the representation (a magnified, shuffled or sector-confined positional code, a
+  separation axis, a go/no-go template) change the decoded code as asked and lower
+  discriminability, at every dose from one update to the full budget. About two thirds of the loss
+  is specific to the target, and a read-out refitted on the end state, linear or not, returns less
+  than half of it.
+- A decoder fitted before training can report the wrong sign. After task training the positional
+  code was more separable and discriminability higher, while the accuracy of the decoder fitted at
+  the start fell from 0.56 to 0.21.
+- With the decision read-out rotated out of the intrinsic manifold, a schedule that advances the
+  rotation only while behaviour holds left 1 of 45 reward-learner runs at the floor, against 30 of
+  45 for a direct jump.
 
 ## Layout
 
 ```
-src/            the network, the tasks, the instrument, the signals, the metrics
-experiments/    one entry point per measurement, plus the aggregation pass
+src/            the network, the tasks, trial collection, training, the threshold sweep, the
+                headroom instrument, the feedback signals, representation measures, statistics
+experiments/    one entry point per measurement, the aggregation pass and the figures
 scripts/        launchers that spread runs across CPU processes
 checkpoints/    trained weights (not versioned; produced by experiments.pretrain)
 results/        one CSV per run (not versioned; tables are rebuilt from them)
@@ -101,8 +57,8 @@ pip install "neurogym @ git+https://github.com/neurogym/neurogym.git"
 pip install -r requirements.txt
 ```
 
-CPU is the right target: one update on a 250-step unroll takes about 0.7 s and a GPU is no faster at
-this network size, so the launchers parallelise across processes instead.
+Training is CPU-bound. One update on a 250-step unroll takes about 0.7 s and a GPU is no faster at
+this size, so the launchers run many processes with two threads each.
 
 ## Quickstart
 
@@ -114,45 +70,67 @@ python -m experiments.aggregate headroom          # rebuild the table from whate
 python -m experiments.figures                     # figures, into results/figures
 ```
 
-`scripts/smoke.sh` runs every entry point on a budget small enough to finish in minutes, which is
-the quickest way to check an installation or a change.
+`scripts/smoke.sh` runs the early entry points on budgets small enough to finish in minutes.
 
-## The pipeline
+## Entry points
 
-Each entry point writes one CSV per run, with the trajectory and the individual re-evaluations behind
-any average, so the tables can be rebuilt without retraining.
+Each entry point writes one CSV per run, with the trajectory and the individual re-evaluations
+behind any average, and `python -m experiments.aggregate <table>` rebuilds a table from them.
 
-| Entry point | What it measures | Aggregate table |
-|---|---|---|
-| `pretrain` | the three-stage curriculum for one network | — |
-| `fit_head` | the position read-out, on frozen dynamics | — |
-| `headroom` | one cell of C_A / C_B / C_A+ (setting × arm × network × restart) | `headroom` |
-| `positive_control` | the task where a linear read-out provably cannot succeed | `control` |
-| `resolutions` | what the instrument can tell apart, per quantity | — |
-| `degradation` | the input-noise ladder and the sub-optimality axis | `degradation` |
-| `patch_integration` | what averaging over the stimulus window is worth | `patch` |
-| `competence` | whether the representation forms before behaviour leaves the floor | — |
-| `nf` | one neurofeedback run (task × condition × network × repeat); conditions include the label-free `reward_aux` and the within-manifold `expand` with its shuffled null, with knobs for the regression target, a weight anchor, decoder co-adaptation and a local learning rule in place of back-propagation | `nf-c1`, `nf-context`, `lambda`, `labelfree` |
-| `manifold` | within- against outside-manifold perturbation of the frozen read-out, relearned by reward, with a fixed incremental ladder or one that advances only while behaviour holds | `manifold` |
-| `representation` | the code at the end of a run, from its saved checkpoints | `representation` |
-| `gradients` | how the task and positional gradients sit relative to each other, and whether a single step of fixed length moves the task loss as the projection predicts | `gradients`, `projection` |
+The instrument:
 
-Run the whole campaign with `scripts/pretrain.sh`, then `scripts/headroom.sh`,
-`scripts/instrument.sh`, `scripts/nf_c1.sh` and `scripts/nf_context.sh`. Together they are a few
-hundred process-hours. `scripts/paper.sh` holds the follow-up runs, each with the question it
-answers and the prediction it was written against.
+| Entry point | What it measures |
+|---|---|
+| `pretrain` | the three-stage curriculum for one network |
+| `fit_head` | the position read-out, fitted on frozen dynamics |
+| `headroom` | one cell of C_A, C_B or C_A+ (setting, arm, network, restart) |
+| `positive_control` | the context task, where a linear read-out of the frozen dynamics cannot succeed |
+| `resolutions`, `criterion_resolution` | what each measure can tell apart on repeated draws |
+| `degradation`, `patch_integration` | an input-noise ladder; what averaging over the stimulus is worth |
+| `competence` | whether the code forms before behaviour leaves the floor |
+
+Training runs:
+
+| Entry point | What it trains |
+|---|---|
+| `nf` | one feedback run (task, condition, network, repeat), with knobs for the target, a weight anchor, decoder adaptation, a local learning rule, payoff and threshold tracking |
+| `dose` | every signal from the start, read along its dose on seeded trials shared by the states of a network; `--save` keeps the end state |
+| `closed_loop` | supervised training under difficulty set by the decoded state, or yoked to another run |
+| `manifold` | the decision read-out rotated within or outside the intrinsic manifold and relearned by reward, directly or by a ladder |
+| `practice` | the decision read-out alone retrained on the end state of a feedback run |
+
+Analyses of saved states, without training:
+
+| Entry point | What it reads |
+|---|---|
+| `stepwise`, `calibration`, `temperature`, `context_optimum` | operating points, payoff optima and the release margin |
+| `access`, `neutral`, `neutral_routes` | whether a loss after a representational target is criterion, access or computation |
+| `location`, `relocated`, `focus` | how much behaviour relies on location, and where the code went |
+| `induction`, `rt_signatures`, `psychometric`, `cue_strength` | induction against behaviour, reaction times, other target and cue strengths |
+| `representation`, `repertoire`, `template_transfer` | the code on the context task, its reuse of old patterns, templates across networks |
+| `response` | whether a signal reaches the decision through the decoder's coupling to it |
+| `gradients`, `components`, `criterion_share`, `snr` | gradient geometry and the criterion and separation parts of one step |
+| `wide_sweep` | the context comparison on a wider grid of thresholds |
+
+`scripts/pretrain.sh`, `headroom.sh`, `instrument.sh`, `nf_c1.sh` and `nf_context.sh` run the first
+campaign, a few hundred process-hours. `scripts/paper.sh` holds every later block as a function
+that states its question and the prediction it was written against:
+
+```bash
+PY=.venv/bin/python JOBS=10 bash scripts/paper.sh 63 66
+```
 
 ## Reproducibility
 
-The trial stream is not seeded — each task instance draws its own trials — so two runs of the same
-command differ in their trials, and the design replicates runs rather than re-deriving them.
-Everything that a restart depends on is seeded: network initialisation, fresh read-out restarts, the
-nonlinear head, and the representation pass.
+The trial stream of a training run is not seeded, so two runs of the same command see different
+trials and the design replicates runs rather than re-deriving them. Network initialisation, read-out
+restarts and the nonlinear head are seeded. The analyses of saved states read every state of a
+network on the same seeded trials (`trials.seeded`).
 
 The base network and the detection task come from
 [leaky-rnn-dale](https://github.com/LimonovJr/leaky-rnn-dale), where the same architecture is
-analysed without neurofeedback.
+analysed without feedback.
 
 ## License
 
-Released under the MIT License — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

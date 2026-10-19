@@ -1,4 +1,4 @@
-"""Turn the per-run CSVs into the tables the report quotes. Aggregation is deliberately separate
+"""Turn the per-run CSVs into the tables of the paper. Aggregation is deliberately separate
 from the runs, so every table can be rebuilt without retraining anything.
 
     python -m experiments.aggregate headroom

@@ -15,8 +15,7 @@ share of the budget: the incremental training under which outside-manifold BCI m
 learnable (Oby et al. 2019), and the proximal-learning idea in its simplest form.
 
 `--auto` closes that loop. The read-out advances one rung only while behaviour on the next rung
-holds up, so the schedule is set by the network rather than by hand -- a decoder that follows the
-brain toward a mapping the brain does not yet have.
+holds up, so the schedule is set by the network's behaviour rather than by hand.
 
 The angle has to be calibrated first: a decision axis is fragile, and too large a rotation floors
 behaviour at once in both kinds, which leaves nothing to compare. `--updates 0` reports the
